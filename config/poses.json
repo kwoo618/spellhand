@@ -1,0 +1,74 @@
+{
+  "schema_version": 2,
+  "device_id": "hand-01",
+  "dof": { "flexion": 5, "opposition": 0, "abduction": 0 },
+  "fingers": ["thumb", "index", "middle", "ring", "pinky"],
+
+  "calibration": {
+    "thumb":  { "open": 180, "closed": 80  },
+    "index":  { "open": 0,   "closed": 120 },
+    "middle": { "open": 0,   "closed": 125 },
+    "ring":   { "open": 0,   "closed": 105 },
+    "pinky":  { "open": 180, "closed": 80  }
+  },
+
+  "timing": {
+    "transition_ms": 900,
+    "transition_slow_ms": 1800,
+    "hold_min_ms": 2000,
+    "hold_max_ms": 3000,
+    "hold_default_ms": 3000,
+    "interpolation_tick_ms": 20,
+    "observe_from": "arrival",
+    "settle_ms": 0,
+    "idle_timeout_ms": 30000,
+    "_note": "transition/hold는 실측. hold_min의 성격(정착/부하)은 미확인. 정착 시간으로 확정되면 observe_from을 settled로 바꾸고 settle_ms를 채운 뒤 hold_min을 내린다"
+  },
+
+  "poses": {
+    "B": { "thumb": 0.70, "index": 0.00, "middle": 0.00, "ring": 0.00, "pinky": 0.00 },
+    "W": { "thumb": 0.70, "index": 0.00, "middle": 0.00, "ring": 0.00, "pinky": 1.00 },
+    "V": { "thumb": 0.70, "index": 0.00, "middle": 0.00, "ring": 1.00, "pinky": 1.00 },
+    "F": { "thumb": 0.70, "index": 0.83, "middle": 0.00, "ring": 0.00, "pinky": 0.00 },
+    "D": { "thumb": 0.70, "index": 0.00, "middle": 0.80, "ring": 0.76, "pinky": 0.70 },
+    "L": { "thumb": 0.00, "index": 0.00, "middle": 1.00, "ring": 1.00, "pinky": 1.00 },
+    "I": { "thumb": 0.70, "index": 0.83, "middle": 0.80, "ring": 0.76, "pinky": 0.00 },
+    "Y": { "thumb": 0.00, "index": 1.00, "middle": 1.00, "ring": 1.00, "pinky": 0.00 },
+    "O": { "thumb": 0.70, "index": 0.83, "middle": 0.80, "ring": 0.76, "pinky": 0.70 },
+    "E": { "thumb": 0.90, "index": 0.50, "middle": 0.48, "ring": 0.57, "pinky": 0.40 },
+    "S": { "thumb": 0.70, "index": 1.00, "middle": 1.00, "ring": 1.00, "pinky": 1.00 }
+  },
+
+  "neutral": { "thumb": 0.00, "index": 0.00, "middle": 0.70, "ring": 0.00, "pinky": 0.00 },
+  "safe":    { "thumb": 0.00, "index": 0.00, "middle": 0.00, "ring": 0.00, "pinky": 0.00 },
+
+  "validation": {
+    "neutral_min_distinct_fingers": 2,
+    "min_finger_delta": 0.20,
+    "_note": "두 자세에서 같은 손가락의 flex 차이가 min_finger_delta 이상이면 '다른 손가락'으로 센다. 중립은 11자 전부와 neutral_min_distinct_fingers 이상 달라야 한다 (기획서 3.5)"
+  },
+
+  "confusion_pairs": [
+    { "pair": ["V","W"], "axis": "count", "depth": false, "hint": "약지를 확인하세요. V는 굽힘, W는 폄" },
+    { "pair": ["W","B"], "axis": "count", "depth": false, "hint": "소지를 확인하세요. W는 굽힘, B는 폄" },
+    { "pair": ["B","F"], "axis": "count", "depth": false, "hint": "검지를 확인하세요. B는 폄, F는 굽힘" },
+    { "pair": ["I","Y"], "axis": "thumb", "depth": false, "hint": "엄지를 확인하세요. I는 굽힘, Y는 폄" },
+    { "pair": ["D","L"], "axis": "thumb", "depth": false, "hint": "엄지를 확인하세요. D는 굽힘, L은 폄" },
+    { "pair": ["I","S"], "axis": "pinky", "depth": false, "hint": "소지를 확인하세요. I는 폄, S는 굽힘" },
+    { "pair": ["I","O"], "axis": "pinky", "depth": false, "hint": "소지를 확인하세요. I는 폄, O는 굽힘" },
+    { "pair": ["D","S"], "axis": "index", "depth": false, "hint": "검지를 확인하세요. D는 폄, S는 굽힘" },
+    { "pair": ["D","O"], "axis": "index", "depth": false, "hint": "검지를 확인하세요. D는 폄, O는 굽힘" },
+    { "pair": ["D","E"], "axis": "index", "depth": false, "hint": "검지를 확인하세요. D는 폄, E는 반쯤 굽힘" },
+    { "pair": ["D","V"], "axis": "middle_ring", "depth": false, "hint": "중지·약지를 확인하세요. D는 굽힘, V는 폄" },
+    { "pair": ["E","F"], "axis": "middle_ring", "depth": false, "hint": "중지·약지를 확인하세요. E는 굽힘, F는 폄" },
+    { "pair": ["E","I"], "axis": "depth", "depth": true,  "hint": "굽힘 깊이를 보세요. E는 얕게, I는 깊게" },
+    { "pair": ["O","S"], "axis": "depth", "depth": true,  "hint": "굽힘 깊이를 보세요. O는 중간, S는 끝까지" },
+    { "pair": ["E","O"], "axis": "depth", "depth": true,  "hint": "굽힘 깊이를 보세요. E는 얕게, O는 중간" }
+  ],
+
+  "curriculum": {
+    "depth_pairs_unlock": { "window_items": 20, "min_accuracy": 0.80 },
+    "heavy_letters": { "D": 0.5 },
+    "_note": "depth 쌍은 최근 20문항(깊이쌍 제외)에서 정확도 0.80 이상일 때 도입. heavy_letters는 해당 글자 포함 문항 비율 상한"
+  }
+}

@@ -1,0 +1,29 @@
+[project]
+name = "spellhand"
+version = "0.1.0"
+description = "지문자 수용 훈련 로봇손 스테이션"
+requires-python = ">=3.11"
+
+# 아래 의존성은 후속 작업에서 실제로 쓰인다. 이번 단계(설정 로딩·검증)는
+# 표준 라이브러리와 pytest 만으로 통과해야 하므로 설치 없이도 테스트가 돈다.
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "sqlalchemy>=2.0",
+    "pyserial",
+    "mcp",
+    "anthropic",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["server", "server.device", "mcp_server"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
