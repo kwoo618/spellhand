@@ -88,11 +88,14 @@ DIFFICULTY_LADDER: Tuple[Tuple[int, str], ...] = (
 
 @dataclass(frozen=True)
 class ItemPrompt:
-    """응답을 받으러 나갈 때 넘기는 문항 정보.
+    """**클라이언트로 나가는** 문항 표현.
 
-    `expected` 는 테스트·시뮬레이션용 응답기가 정답을 알아야 해서 들어 있다.
-    **학습자 화면에 노출하면 안 된다** — 웹 어댑터는 이 필드를 읽지 않는다
-    (DECISIONS.md §22).
+    정답은 여기 없다. 이 객체는 그대로 직렬화되어 브라우저로 가므로, 정답이
+    필드로 들어 있으면 화면에 띄우지 않아도 응답 본문에서 읽힌다. 정답은 서버가
+    `_AnswerKey` 로 따로 들고 있다 (DECISIONS.md §22).
+
+    새 필드를 추가할 때는 그 값이 정답을 되돌릴 수 있는지 먼저 확인할 것.
+    `length` 는 이미 나가는 정보다 (PRD 14.1 화면이 길이를 표시한다).
     """
 
     seq: int
@@ -102,11 +105,29 @@ class ItemPrompt:
     hold_ms: int
     transition_ms: int
     attempt: int
-    expected: str
+
+
+@dataclass(frozen=True)
+class _AnswerKey:
+    """서버만 보는 정답. 클라이언트 표현과 타입이 아예 다르다.
+
+    `ItemPrompt` 와 섞이지 않도록 별도 타입으로 둔다 — dict 나 문자열로 들고
+    다니면 언젠가 응답 payload 에 얹힌다.
+    """
+
+    seq: int
+    letters: str
 
 
 class AnswerProvider(Protocol):
-    def __call__(self, prompt: ItemPrompt) -> str: ...
+    """세션 루프가 응답을 받아 오는 방법.
+
+    `expected` 는 **인자로만** 전달된다. `prompt` 의 필드가 아니므로 클라이언트
+    표현을 직렬화할 때 딸려 나갈 수 없다. 실제 웹 어댑터는 이 인자를 무시하고
+    브라우저에서 받은 문자열을 돌려준다.
+    """
+
+    def __call__(self, prompt: ItemPrompt, expected: str) -> str: ...
 
 
 @dataclass(frozen=True)
@@ -357,11 +378,13 @@ class SessionRunner:
                 hold_ms=spec.hold_ms,
                 transition_ms=spec.transition_ms,
                 attempt=attempt,
-                expected=spec.letters,
             )
-            answer = answer_provider(prompt)
+            # 정답은 서버가 들고 있고 응답기에는 별도 인자로만 건넨다.
+            # 클라이언트로 나가는 것은 prompt 뿐이다.
+            key = _AnswerKey(seq=seq, letters=spec.letters)
+            answer = answer_provider(prompt, key.letters)
             answered_at = self._clock()
-            judgement = judge_module.judge(spec.letters, answer)
+            judgement = judge_module.judge(key.letters, answer)
 
             self._record(
                 session_id=session_id,

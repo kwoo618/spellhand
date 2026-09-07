@@ -96,13 +96,12 @@ def runner(config, words, db, device, clock):
     )
 
 
-def always_correct(prompt: ItemPrompt) -> str:
-    return prompt.expected
+def always_correct(prompt: ItemPrompt, expected: str) -> str:
+    return expected
 
 
-def always_wrong(prompt: ItemPrompt) -> str:
+def always_wrong(prompt: ItemPrompt, expected: str) -> str:
     """항상 첫 글자를 다른 글자로 바꿔 답한다 — `wrong` 이 나오도록."""
-    expected = prompt.expected
     replacement = "B" if expected[0] != "B" else "W"
     return replacement + expected[1:]
 
@@ -317,8 +316,8 @@ def test_confusions_are_recorded_for_wrong_answers(runner, db):
 def test_an_order_error_gets_no_demo(runner, config):
     """애너그램은 혼동 기록이 없으므로 시범 대상이 없다 (PRD 9.4)."""
 
-    def scrambled(prompt: ItemPrompt) -> str:
-        return prompt.expected[::-1]
+    def scrambled(prompt: ItemPrompt, expected: str) -> str:
+        return expected[::-1]
 
     summary = runner.run(
         "haru", scrambled, plan=SessionPlan(discrimination_items=1, word_items=0)
@@ -328,8 +327,8 @@ def test_an_order_error_gets_no_demo(runner, config):
 
 
 def test_order_errors_land_in_their_own_column(runner):
-    def scrambled(prompt: ItemPrompt) -> str:
-        return prompt.expected[::-1]
+    def scrambled(prompt: ItemPrompt, expected: str) -> str:
+        return expected[::-1]
 
     summary = runner.run(
         "haru", scrambled, plan=SessionPlan(discrimination_items=2, word_items=0)
@@ -473,10 +472,10 @@ def test_adaptation_can_be_swapped_out(config, words, db, device, clock):
 def test_word_answers_do_not_move_discrimination_numbers(runner, db):
     """단어는 전부 틀리고 판별은 전부 맞히면, 두 숫자가 따로 나와야 한다."""
 
-    def word_wrong(prompt: ItemPrompt) -> str:
+    def word_wrong(prompt: ItemPrompt, expected: str) -> str:
         if prompt.track == TRACK_WORD:
-            return always_wrong(prompt)
-        return prompt.expected
+            return always_wrong(prompt, expected)
+        return expected
 
     summary = runner.run("haru", word_wrong)
 
@@ -492,10 +491,10 @@ def test_word_answers_do_not_move_discrimination_numbers(runner, db):
 def test_confusions_stay_in_their_own_track(runner, db, config):
     from server.stats import confusion_counts
 
-    def word_wrong(prompt: ItemPrompt) -> str:
+    def word_wrong(prompt: ItemPrompt, expected: str) -> str:
         if prompt.track == TRACK_WORD:
-            return always_wrong(prompt)
-        return prompt.expected
+            return always_wrong(prompt, expected)
+        return expected
 
     summary = runner.run("haru", word_wrong)
     with db.session() as session:
@@ -516,9 +515,9 @@ def test_confusions_stay_in_their_own_track(runner, db, config):
 def test_the_prompt_describes_the_item(runner):
     seen = []
 
-    def record(prompt: ItemPrompt) -> str:
+    def record(prompt: ItemPrompt, expected: str) -> str:
         seen.append(prompt)
-        return prompt.expected
+        return expected
 
     runner.run("haru", record, plan=SessionPlan(discrimination_items=2, word_items=1))
 
@@ -529,7 +528,7 @@ def test_the_prompt_describes_the_item(runner):
         TRACK_WORD,
     ]
     for prompt in seen:
-        assert prompt.length == len(prompt.expected)
+        assert prompt.length > 0
         assert prompt.attempt == 1
         assert prompt.boundary in (BOUNDARY_EXPLICIT, BOUNDARY_DIRECT)
 
@@ -537,9 +536,9 @@ def test_the_prompt_describes_the_item(runner):
 def test_the_second_attempt_says_so(runner):
     attempts = []
 
-    def record(prompt: ItemPrompt) -> str:
+    def record(prompt: ItemPrompt, expected: str) -> str:
         attempts.append(prompt.attempt)
-        return always_wrong(prompt)
+        return always_wrong(prompt, expected)
 
     runner.run(
         "haru", record, plan=SessionPlan(discrimination_items=1, word_items=0)
@@ -563,10 +562,10 @@ def test_the_lock_survives_a_long_demanding_item(config, words, db, device, cloc
     )
 
     # 앞의 4문항을 맞혀 난이도를 7글자·direct 까지 올린 뒤 틀린다.
-    def climb_then_fail(prompt: ItemPrompt) -> str:
+    def climb_then_fail(prompt: ItemPrompt, expected: str) -> str:
         if prompt.seq <= 5:
-            return prompt.expected
-        return always_wrong(prompt)
+            return expected
+        return always_wrong(prompt, expected)
 
     summary = runner.run(
         "haru", climb_then_fail, plan=SessionPlan(discrimination_items=8, word_items=4)
@@ -596,3 +595,65 @@ def test_a_heartbeat_is_sent_for_every_letter(config, words, db, device, clock):
     letters = sum(len(o.letters) for o in summary.outcomes)
     # 문항 시작마다 1회 + 글자마다 1회.
     assert len(beats) >= letters
+
+
+# --------------------------------------------------------------------------- #
+# 정답 유출 회귀 (DECISIONS §22) — 이 테스트는 완화하지 않는다
+# --------------------------------------------------------------------------- #
+
+def test_the_client_prompt_has_no_answer_field(runner):
+    """클라이언트 표현을 직렬화한 결과에 정답이 등장하지 않는다.
+
+    ItemPrompt 는 그대로 브라우저로 나간다. 정답이 필드로 들어 있으면 화면에
+    띄우지 않아도 응답 본문에서 읽힌다.
+    """
+    import dataclasses
+    import json
+
+    seen = []
+
+    def capture(prompt: ItemPrompt, expected: str):
+        seen.append((prompt, expected))
+        return expected
+
+    runner.run("haru", capture, plan=SessionPlan(discrimination_items=4, word_items=2))
+
+    assert seen
+    for prompt, expected in seen:
+        payload = json.dumps(dataclasses.asdict(prompt), ensure_ascii=False)
+        assert expected not in payload, payload
+        # 필드 값 어디에도 정답이 들어 있지 않다.
+        for value in dataclasses.asdict(prompt).values():
+            assert value != expected
+        assert not hasattr(prompt, "expected")
+        assert not hasattr(prompt, "letters")
+        assert not hasattr(prompt, "answer")
+
+
+def test_item_prompt_fields_are_fixed():
+    """필드가 늘어나면 여기서 걸린다. 늘릴 값이 정답을 되돌리지 않는지 확인할 것."""
+    import dataclasses
+
+    assert {f.name for f in dataclasses.fields(ItemPrompt)} == {
+        "seq",
+        "track",
+        "length",
+        "boundary",
+        "hold_ms",
+        "transition_ms",
+        "attempt",
+    }
+
+
+def test_length_alone_cannot_reveal_the_answer(runner):
+    """길이는 화면에 표시되는 값이다 (PRD 14.1). 길이만으로는 정답이 복원되지 않는다."""
+    prompts = []
+
+    def capture(prompt: ItemPrompt, expected: str):
+        prompts.append((prompt.length, expected))
+        return expected
+
+    runner.run("haru", capture, plan=SessionPlan(discrimination_items=6, word_items=0))
+    lengths = {length for length, _ in prompts}
+    answers = {expected for _, expected in prompts}
+    assert len(answers) > len(lengths), "같은 길이에 서로 다른 정답이 있어야 한다"
