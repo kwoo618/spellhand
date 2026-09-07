@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>지문자 훈련</title>
+<style>
+  /* 시선은 로봇손에 있어야 한다. 화면은 상태를 알려 주고 입력을 받는 것까지다.
+     색 강조와 움직임을 최소로 두고 여백과 대비로만 구분한다 (PRD 14.1). */
+  :root {
+    --ink: #1a1a1a;
+    --muted: #6b6b6b;
+    --line: #d8d8d8;
+    --paper: #fbfbfa;
+    --accent: #2f2f2f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex;
+    justify-content: center;
+    padding: 4rem 1.5rem;
+  }
+  main { width: 100%; max-width: 30rem; }
+
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 3rem;
+  }
+  .learner { font-weight: 600; }
+  .counter { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  .status {
+    min-height: 4rem;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    color: var(--muted);
+  }
+  .dot {
+    width: 0.5rem; height: 0.5rem; border-radius: 50%;
+    background: var(--line); flex: none;
+  }
+  .dot.live { background: var(--accent); }
+
+  label { display: block; margin-bottom: 0.5rem; color: var(--muted); }
+  input[type="text"] {
+    width: 100%;
+    padding: 0.85rem 1rem;
+    font: inherit;
+    font-size: 1.4rem;
+    letter-spacing: 0.35em;
+    text-transform: uppercase;
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    background: #fff;
+    color: var(--ink);
+  }
+  input[type="text"]:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  input[type="text"]:disabled { background: #f2f2f1; color: var(--muted); }
+
+  .row { display: flex; gap: 0.5rem; margin-top: 1rem; flex-wrap: wrap; }
+  button {
+    font: inherit;
+    padding: 0.7rem 1.2rem;
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    background: #fff;
+    color: var(--ink);
+    cursor: pointer;
+  }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button:disabled { opacity: 0.4; cursor: default; }
+
+  .result { margin-top: 2rem; padding-top: 1.25rem; border-top: 1px solid var(--line); }
+  .result[hidden] { display: none; }
+  .verdict { font-weight: 600; }
+  .reveal { font-size: 1.3rem; letter-spacing: 0.3em; margin: 0.5rem 0; }
+  .hint { color: var(--muted); }
+  .note { color: var(--muted); font-size: 0.9rem; }
+
+  table { border-collapse: collapse; width: 100%; margin-top: 0.75rem; }
+  caption { text-align: left; font-weight: 600; padding-bottom: 0.4rem; }
+  th, td { text-align: left; padding: 0.4rem 0.6rem 0.4rem 0; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 400; }
+  td { font-variant-numeric: tabular-nums; }
+
+  .error { color: #8a2b2b; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <span class="learner" id="learner">—</span>
+    <span class="counter" id="counter"></span>
+  </header>
+
+  <!-- 시작 -->
+  <section id="startPanel">
+    <label for="name">이름</label>
+    <input type="text" id="name" autocomplete="off" style="letter-spacing:normal;text-transform:none">
+    <div class="row">
+      <button class="primary" id="startBtn">세션 시작</button>
+    </div>
+    <p class="note" id="startNote"></p>
+  </section>
+
+  <!-- 훈련 -->
+  <section id="trainPanel" hidden>
+    <div class="status"><span class="dot" id="dot"></span><span id="status">준비 중</span></div>
+
+    <label for="answer">읽은 글자</label>
+    <input type="text" id="answer" autocomplete="off" autocapitalize="characters" spellcheck="false" disabled>
+    <div class="row">
+      <button class="primary" id="submitBtn" disabled>제출</button>
+      <button id="replayBtn" disabled>다시 보기</button>
+      <button id="demoBtn" disabled>시범 다시 보기</button>
+    </div>
+
+    <div class="result" id="result" hidden>
+      <p class="verdict" id="verdict"></p>
+      <p class="reveal" id="reveal"></p>
+      <p class="hint" id="hint"></p>
+      <div class="row"><button class="primary" id="nextBtn">다음 문항</button></div>
+    </div>
+  </section>
+
+  <!-- 요약 -->
+  <section id="summaryPanel" hidden>
+    <h2>세션 요약</h2>
+    <p class="note">
+      두 트랙은 훈련하는 기술이 다르므로 따로 봅니다. 합친 수치는 내지 않습니다.
+    </p>
+    <div id="summaryTables"></div>
+    <div class="row"><button class="primary" id="againBtn">처음으로</button></div>
+  </section>
+
+  <p class="error" id="error"></p>
+</main>
+
+<script>
+"use strict";
+
+const TRACK_LABEL = { discrimination: "판별", word: "단어" };
+const RESULT_LABEL = {
+  correct: "정답",
+  wrong: "글자를 잘못 읽었습니다",
+  length: "글자 수가 다릅니다",
+  order: "글자는 맞고 순서가 다릅니다",
+};
+
+const el = (id) => document.getElementById(id);
+const state = {
+  sessionId: null,
+  total: 0,
+  prompt: null,
+  socket: null,
+  demoAvailable: false,
+};
+
+function show(id, visible) { el(id).hidden = !visible; }
+function setError(message) { el("error").textContent = message || ""; }
+
+/** 서버 거부는 구조화된 코드로 온다. 여기서 문구를 새로 지어내지 않고 그대로 보인다. */
+async function call(method, path, body) {
+  const response = await fetch(path, {
+    method,
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const text = await response.text();
+  const payload = text ? JSON.parse(text) : {};
+  if (!response.ok) {
+    const detail = payload.detail || response.statusText;
+    throw new Error(`[${payload.code || response.status}] ${detail}`);
+  }
+  return payload;
+}
+
+// --------------------------------------------------------------------- //
+// 상태 표시 — WS 는 받기만 한다. 명령은 전부 REST 로 나간다.
+// --------------------------------------------------------------------- //
+
+function openSocket(sessionId) {
+  const scheme = location.protocol === "https:" ? "wss" : "ws";
+  const socket = new WebSocket(`${scheme}://${location.host}/ws/session/${sessionId}`);
+  socket.onmessage = (event) => handleEvent(JSON.parse(event.data));
+  socket.onclose = () => { el("dot").classList.remove("live"); };
+  state.socket = socket;
+}
+
+function handleEvent(event) {
+  switch (event.type) {
+    case "presenting":
+      el("dot").classList.add("live");
+      el("status").textContent =
+        event.attempt > 1 ? "다시 표현 중 — 천천히 봅니다" : "표현 중";
+      setAnswering(false);
+      break;
+    case "ready":
+      el("status").textContent = `표현 중 — ${event.letter_pos + 1}번째 글자`;
+      break;
+    case "done":
+      el("dot").classList.remove("live");
+      el("status").textContent = "읽은 글자를 입력하세요";
+      setAnswering(true);
+      break;
+    case "demo":
+      el("status").textContent = `시범: ${event.letters.join(" · ")}`;
+      break;
+    case "error":
+      setError(`[${event.code}] ${event.detail || ""}`);
+      el("dot").classList.remove("live");
+      break;
+  }
+}
+
+function setAnswering(enabled) {
+  el("answer").disabled = !enabled;
+  el("submitBtn").disabled = !enabled;
+  el("replayBtn").disabled = !enabled;
+  if (enabled) el("answer").focus();
+}
+
+// --------------------------------------------------------------------- //
+// 흐름
+// --------------------------------------------------------------------- //
+
+async function startSession() {
+  setError("");
+  const name = el("name").value.trim();
+  if (!name) { el("startNote").textContent = "이름을 입력하세요."; return; }
+
+  try {
+    const session = await call("POST", "/api/sessions", { learner_name: name });
+    state.sessionId = session.session_id;
+    state.total = session.total_items;
+    el("learner").textContent = name;
+    show("startPanel", false);
+    show("trainPanel", true);
+    openSocket(session.session_id);
+    await nextItem();
+  } catch (err) {
+    el("startNote").textContent = err.message;
+  }
+}
+
+async function nextItem() {
+  setError("");
+  show("result", false);
+  state.demoAvailable = false;
+  el("demoBtn").disabled = true;
+  el("answer").value = "";
+
+  try {
+    state.prompt = await call("GET", `/api/sessions/${state.sessionId}/next`);
+  } catch (err) {
+    // 계획된 문항을 다 냈다면 요약으로 넘어간다.
+    if (err.message.includes("SESSION_FINISHED")) { return endSession(); }
+    setError(err.message);
+    return;
+  }
+  renderCounter();
+  await present();
+}
+
+function renderCounter() {
+  const p = state.prompt;
+  // 트랙은 보여 주고, 길이는 판별 트랙에서만 보여 준다 (PRD 14.1).
+  const track = TRACK_LABEL[p.track] || p.track;
+  const length = p.track === "discrimination" ? ` · ${p.length}글자` : "";
+  el("counter").textContent = `${p.index} / ${state.total} · ${track}${length}`;
+}
+
+async function present() {
+  setAnswering(false);
+  el("status").textContent = "표현 준비 중";
+  try {
+    await call("POST", `/api/sessions/${state.sessionId}/present`);
+  } catch (err) {
+    setError(err.message);
+  }
+}
+
+async function submit() {
+  setError("");
+  const answer = el("answer").value.trim();
+  if (!answer) return;
+
+  setAnswering(false);
+  let outcome;
+  try {
+    outcome = await call("POST", `/api/sessions/${state.sessionId}/answer`, { answer });
+  } catch (err) {
+    setError(err.message);
+    setAnswering(true);
+    return;
+  }
+
+  if (outcome.retry) {
+    // 오답 1회째. 정답은 알려주지 않고 같은 문항을 느리게 다시 낸다.
+    el("status").textContent = "다시 한 번 봅니다";
+    el("answer").value = "";
+    state.prompt = await call("GET", `/api/sessions/${state.sessionId}/next`);
+    renderCounter();
+    await present();
+    return;
+  }
+
+  renderResult(outcome);
+  if (outcome.finished) {
+    el("nextBtn").textContent = "요약 보기";
+  }
+}
+
+function renderResult(outcome) {
+  el("verdict").textContent = RESULT_LABEL[outcome.result] || outcome.result;
+  el("reveal").textContent = outcome.expected ? `정답 ${outcome.expected}` : "";
+  el("hint").textContent = outcome.demo && outcome.demo.hint ? outcome.demo.hint : "";
+  state.demoAvailable = Boolean(outcome.demo);
+  el("demoBtn").disabled = !state.demoAvailable;
+  show("result", true);
+  el("nextBtn").focus();
+}
+
+async function replayDemo() {
+  if (!state.demoAvailable) return;
+  try {
+    await call("POST", `/api/sessions/${state.sessionId}/demo`);
+  } catch (err) {
+    setError(err.message);
+  }
+}
+
+async function endSession() {
+  try {
+    const summary = await call("POST", `/api/sessions/${state.sessionId}/end`);
+    renderSummary(summary);
+  } catch (err) {
+    setError(err.message);
+    return;
+  }
+  if (state.socket) state.socket.close();
+  show("trainPanel", false);
+  show("summaryPanel", true);
+  el("counter").textContent = "";
+}
+
+function renderSummary(summary) {
+  const container = el("summaryTables");
+  container.innerHTML = "";
+
+  for (const [track, s] of Object.entries(summary.by_track)) {
+    const table = document.createElement("table");
+    const pct = (v) => (v === null ? "—" : `${Math.round(v * 100)}%`);
+    const ms = (v) => (v === null ? "—" : `${Math.round(v)}ms`);
+    const confusions = (summary.confusions_by_track[track] || [])
+      .map((c) => `${c.pair.join("/")} ${c.count}회`)
+      .join(", ") || "—";
+
+    table.innerHTML = `
+      <caption>${TRACK_LABEL[track] || track} 트랙</caption>
+      <tr><th>문항</th><td>${s.answered}</td></tr>
+      <tr><th>정확도</th><td>${pct(s.accuracy)}</td></tr>
+      <tr><th>순서 오류율</th><td>${pct(s.order_error_rate)}</td></tr>
+      <tr><th>평균 응답</th><td>${ms(s.avg_response_ms)}</td></tr>
+      <tr><th>혼동 쌍</th><td>${confusions}</td></tr>
+    `;
+    container.appendChild(table);
+  }
+}
+
+// --------------------------------------------------------------------- //
+
+el("startBtn").addEventListener("click", startSession);
+el("name").addEventListener("keydown", (e) => { if (e.key === "Enter") startSession(); });
+el("submitBtn").addEventListener("click", submit);
+el("answer").addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
+el("replayBtn").addEventListener("click", present);
+el("demoBtn").addEventListener("click", replayDemo);
+el("nextBtn").addEventListener("click", () => {
+  if (el("nextBtn").textContent === "요약 보기") { endSession(); } else { nextItem(); }
+});
+el("againBtn").addEventListener("click", () => location.reload());
+
+// 락 heartbeat. 세션이 살아 있음을 서버에 알린다 (PRD 10장: 15초 주기).
+setInterval(() => {
+  if (state.sessionId) {
+    call("POST", `/api/sessions/${state.sessionId}/heartbeat`).catch(() => {});
+  }
+}, 10000);
+</script>
+</body>
+</html>

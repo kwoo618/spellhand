@@ -388,3 +388,90 @@ def test_a_late_subscriber_still_sees_the_current_state(client, station):
         replayed = [ws.receive_json() for _ in range(2)]
 
     assert replayed[0]["type"] == "presenting"
+
+
+# --------------------------------------------------------------------------- #
+# 정적 파일
+# --------------------------------------------------------------------------- #
+
+def test_practice_page_is_served(client):
+    response = client.get("/practice.html")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+
+
+def test_the_page_has_no_build_step_and_no_cdn(client):
+    """빌드 도구도 프레임워크도 CDN 도 쓰지 않는다. 단일 파일이다."""
+    body = client.get("/practice.html").text
+    assert "<script src=" not in body
+    assert "<link rel=\"stylesheet\"" not in body
+    for forbidden in ("react", "vue", "jquery", "tailwind", "cdn."):
+        assert forbidden not in body.lower(), forbidden
+
+
+def test_the_page_never_reads_an_answer_off_the_prompt(client):
+    """화면 코드가 문항 표현에서 정답을 찾지 않는다.
+
+    서버가 제출 전에는 정답을 주지 않지만(§22), 화면 쪽에서도 그런 필드를
+    기대하지 않아야 나중에 필드가 생겨도 새지 않는다.
+
+    `outcome.expected` 와 시범 이벤트의 `letters` 는 예외다. 둘 다 문항이
+    끝난 뒤에만 나오고, 그때는 정답 공개가 의도다 (기획서 5.2).
+    """
+    body = client.get("/practice.html").text
+    for forbidden in (
+        "prompt.expected",
+        "prompt.letters",
+        ".expected_letters",
+        ".answer_key",
+        "state.prompt.expected",
+    ):
+        assert forbidden not in body, forbidden
+
+
+def test_the_page_shows_tracks_separately(client):
+    """요약은 트랙별로만 그린다. 통합 지표를 만들지 않는다."""
+    body = client.get("/practice.html").text
+    assert "by_track" in body
+    assert "confusions_by_track" in body
+    for forbidden in ("overall", "total_accuracy", "combined"):
+        assert forbidden not in body.lower(), forbidden
+
+
+# --------------------------------------------------------------------------- #
+# 실제 백그라운드 스레드 경로
+# --------------------------------------------------------------------------- #
+
+def test_presentation_really_runs_on_a_background_thread(config, clock):
+    """다른 테스트는 인라인으로 돌린다. 프로덕션 경로는 스레드다 — 한 번은
+    그쪽으로도 지나가 본다.
+
+    `/present` 가 즉시 202 로 돌아오고, 표현 완료는 WS `done` 으로 온다.
+    """
+    from server.routes import _thread_background
+
+    station = build_station(
+        config_path=REAL_POSES,
+        words_path=REAL_WORDS,
+        database=Database.in_memory(),
+        device=MockDevice(config, sleep=clock.sleep),
+        clock=clock,
+        background=_thread_background,
+    )
+
+    with TestClient(create_app(station)) as client:
+        session = start(client)
+        sid = session["session_id"]
+
+        with client.websocket_connect(f"/ws/session/{sid}") as ws:
+            client.get(f"/api/sessions/{sid}/next")
+            accepted = client.post(f"/api/sessions/{sid}/present")
+            assert accepted.status_code == 202
+
+            kinds = []
+            while "done" not in kinds:
+                kinds.append(ws.receive_json()["type"])
+
+        assert kinds[0] == "presenting"
+        assert kinds[-1] == "done"
+        assert station.controllers[sid].state == "awaiting_answer"
