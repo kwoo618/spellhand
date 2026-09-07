@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Mapping, Sequence, Tuple
 __all__ = [
     "ConfigError",
     "Config",
+    "ServoRange",
     "FingerCalibration",
     "Timing",
     "Validation",
@@ -32,11 +33,9 @@ SUPPORTED_SCHEMA_VERSION = 2
 # 리포지토리 루트 기준 기본 설정 경로.
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "config" / "poses.json"
 
-# 서보 기종의 물리 가동범위(도). 자세 값도 캘리브레이션 값도 아닌 하드웨어 상수이며,
-# calibration 의 open/closed 가 이 범위 안에 있는지 확인하는 데에만 쓴다.
-# 각도 리터럴 금지 원칙의 유일한 의도된 예외다 (DECISIONS.md "서보 가동범위 상수").
-SERVO_ANGLE_MIN_DEG = 0
-SERVO_ANGLE_MAX_DEG = 180
+# 서보 각도는 이 모듈 어디에도 리터럴로 등장하지 않는다. 가동범위조차
+# calibration.servo_range_deg 에서 읽는다 — 하드웨어를 바꾸면 poses.json 만
+# 고치면 되도록 (DECISIONS.md §2).
 
 # flex 는 0.0~1.0 정규화 굽힘 정도다. 0.0 = 완전히 폄, 1.0 = 안전 최대 굽힘.
 FLEX_MIN = 0.0
@@ -125,6 +124,14 @@ def _require_array(value: Any, path: str, expected: str) -> Sequence[Any]:
 # --------------------------------------------------------------------------- #
 
 @dataclass(frozen=True)
+class ServoRange:
+    """서보 기종의 물리 가동범위(도). 하드웨어를 바꾸면 이 값도 바뀐다."""
+
+    min: int
+    max: int
+
+
+@dataclass(frozen=True)
 class FingerCalibration:
     """한 손가락의 서보 각도 양 끝점. flex 0.0 -> open, flex 1.0 -> closed."""
 
@@ -167,6 +174,7 @@ class Config:
     device_id: str
     dof: Mapping[str, Any]
     fingers: Tuple[str, ...]
+    servo_range: ServoRange
     calibration: Mapping[str, FingerCalibration]
     timing: Timing
     poses: Mapping[str, Pose]
@@ -238,37 +246,59 @@ def _parse_pose(raw: Any, path: str, fingers: Tuple[str, ...]) -> Pose:
     return pose
 
 
+def _parse_servo_range(node: Mapping[str, Any]) -> ServoRange:
+    """서보 가동범위. 각도 상·하한은 코드가 아니라 여기서만 온다."""
+    path = "$.calibration.servo_range_deg"
+    entry = _require_mapping(_require_key(node, "servo_range_deg", "$.calibration"), path)
+    low = _require_int(_require_key(entry, "min", path), f"{path}.min")
+    high = _require_int(_require_key(entry, "max", path), f"{path}.max")
+    if low >= high:
+        raise _fail(
+            f"{path}.min",
+            low,
+            f"a value strictly below {path}.max ({high})",
+        )
+    return ServoRange(min=low, max=high)
+
+
 def _parse_calibration(
     raw: Mapping[str, Any], fingers: Tuple[str, ...]
-) -> Dict[str, FingerCalibration]:
+) -> Tuple[ServoRange, Dict[str, FingerCalibration]]:
     node = _require_mapping(_require_key(raw, "calibration", "$"), "$.calibration")
+    servo_range = _parse_servo_range(node)
+
+    per_finger = _require_mapping(
+        _require_key(node, "fingers", "$.calibration"), "$.calibration.fingers"
+    )
     expected = set(fingers)
-    actual = set(node.keys())
+    actual = set(per_finger.keys())
     if actual != expected:
         raise ConfigError(
-            f"$.calibration: keys {sorted(actual)}, "
+            f"$.calibration.fingers: keys {sorted(actual)}, "
             f"expected exactly the fingers listed in $.fingers {sorted(expected)}"
         )
+
     out: Dict[str, FingerCalibration] = {}
     for finger in fingers:
-        entry = _require_mapping(node[finger], f"$.calibration.{finger}")
+        finger_path = f"$.calibration.fingers.{finger}"
+        entry = _require_mapping(per_finger[finger], finger_path)
         angles: Dict[str, int] = {}
         for endpoint in ("open", "closed"):
             angles[endpoint] = _require_int(
-                _require_key(entry, endpoint, f"$.calibration.{finger}"),
-                f"$.calibration.{finger}.{endpoint}",
-                minimum=SERVO_ANGLE_MIN_DEG,
-                maximum=SERVO_ANGLE_MAX_DEG,
+                _require_key(entry, endpoint, finger_path),
+                f"{finger_path}.{endpoint}",
+                minimum=servo_range.min,
+                maximum=servo_range.max,
             )
         if angles["open"] == angles["closed"]:
             raise _fail(
-                f"$.calibration.{finger}",
+                finger_path,
                 angles,
                 "open and closed to be different angles "
                 "(a finger with no travel cannot be driven)",
             )
         out[finger] = FingerCalibration(open=angles["open"], closed=angles["closed"])
-    return out
+    return servo_range, out
 
 
 def _parse_timing(raw: Mapping[str, Any]) -> Timing:
@@ -480,7 +510,7 @@ def load_config(path: "str | Path" = DEFAULT_CONFIG_PATH) -> Config:
     dof = _require_mapping(_require_key(root, "dof", "$"), "$.dof")
 
     fingers = _parse_fingers(root)
-    calibration = _parse_calibration(root, fingers)
+    servo_range, calibration = _parse_calibration(root, fingers)
     timing = _parse_timing(root)
     validation = _parse_validation(root)
 
@@ -503,6 +533,7 @@ def load_config(path: "str | Path" = DEFAULT_CONFIG_PATH) -> Config:
         device_id=device_id,
         dof=dof,
         fingers=fingers,
+        servo_range=servo_range,
         calibration=calibration,
         timing=timing,
         poses=poses,

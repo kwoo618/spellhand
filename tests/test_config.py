@@ -90,6 +90,15 @@ def test_calibration_covers_every_finger(config):
         assert cal.open != cal.closed, finger
 
 
+def test_servo_range_comes_from_the_config_file(config):
+    # 서보 가동범위는 하드웨어 종속값이라 코드가 아니라 poses.json 에서 온다.
+    # 손을 바꾸면 이 값도 바뀌므로 코드는 손대지 않는다.
+    assert config.servo_range.min < config.servo_range.max
+    for finger, cal in config.calibration.items():
+        for angle in (cal.open, cal.closed):
+            assert config.servo_range.min <= angle <= config.servo_range.max, finger
+
+
 # --------------------------------------------------------------------------- #
 # 경계값 회귀 테스트
 # --------------------------------------------------------------------------- #
@@ -291,20 +300,88 @@ def test_duplicate_poses_are_rejected(broken):
 
 def test_calibration_with_equal_endpoints_is_rejected(broken):
     def mutate(data):
-        data["calibration"]["index"]["closed"] = data["calibration"]["index"]["open"]
+        fingers = data["calibration"]["fingers"]
+        fingers["index"]["closed"] = fingers["index"]["open"]
 
     with pytest.raises(ConfigError) as exc:
         load_config(broken(mutate))
-    assert "$.calibration.index" in str(exc.value)
+    assert "$.calibration.fingers.index" in str(exc.value)
 
 
 def test_calibration_key_mismatch_is_rejected(broken):
     def mutate(data):
-        data["calibration"]["pinkie"] = data["calibration"].pop("pinky")
+        fingers = data["calibration"]["fingers"]
+        fingers["pinkie"] = fingers.pop("pinky")
 
     with pytest.raises(ConfigError) as exc:
         load_config(broken(mutate))
-    assert "$.calibration" in str(exc.value)
+    assert "$.calibration.fingers" in str(exc.value)
+
+
+def test_angle_above_servo_range_is_rejected(broken):
+    def mutate(data):
+        top = data["calibration"]["servo_range_deg"]["max"]
+        data["calibration"]["fingers"]["thumb"]["open"] = top + 1
+
+    with pytest.raises(ConfigError) as exc:
+        load_config(broken(mutate))
+    assert "$.calibration.fingers.thumb.open" in str(exc.value)
+
+
+def test_angle_below_servo_range_is_rejected(broken):
+    def mutate(data):
+        floor = data["calibration"]["servo_range_deg"]["min"]
+        data["calibration"]["fingers"]["index"]["open"] = floor - 1
+
+    with pytest.raises(ConfigError) as exc:
+        load_config(broken(mutate))
+    assert "$.calibration.fingers.index.open" in str(exc.value)
+
+
+def test_inverted_servo_range_is_rejected(broken):
+    def mutate(data):
+        rng = data["calibration"]["servo_range_deg"]
+        rng["min"], rng["max"] = rng["max"], rng["min"]
+
+    with pytest.raises(ConfigError) as exc:
+        load_config(broken(mutate))
+    assert "$.calibration.servo_range_deg.min" in str(exc.value)
+
+
+def test_degenerate_servo_range_is_rejected(broken):
+    def mutate(data):
+        rng = data["calibration"]["servo_range_deg"]
+        rng["min"] = rng["max"]
+
+    with pytest.raises(ConfigError) as exc:
+        load_config(broken(mutate))
+    assert "$.calibration.servo_range_deg.min" in str(exc.value)
+
+
+def test_missing_servo_range_is_rejected(broken):
+    def mutate(data):
+        del data["calibration"]["servo_range_deg"]
+
+    with pytest.raises(ConfigError) as exc:
+        load_config(broken(mutate))
+    assert "servo_range_deg" in str(exc.value)
+
+
+def test_a_narrower_servo_range_rejects_the_real_angles(broken):
+    """가동범위를 좁히면 실측 각도가 걸린다 — 범위가 실제로 쓰이는지 확인."""
+
+    def mutate(data):
+        # 상한을 손가락 최대 각도 아래로 내린다.
+        angles = [
+            v
+            for finger in data["calibration"]["fingers"].values()
+            for v in finger.values()
+        ]
+        data["calibration"]["servo_range_deg"]["max"] = max(angles) - 1
+
+    with pytest.raises(ConfigError) as exc:
+        load_config(broken(mutate))
+    assert "$.calibration.fingers." in str(exc.value)
 
 
 def test_missing_file_raises_config_error(tmp_path):

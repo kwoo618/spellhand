@@ -5,11 +5,14 @@
   "fingers": ["thumb", "index", "middle", "ring", "pinky"],
 
   "calibration": {
-    "thumb":  { "open": 180, "closed": 80  },
-    "index":  { "open": 0,   "closed": 120 },
-    "middle": { "open": 0,   "closed": 125 },
-    "ring":   { "open": 0,   "closed": 105 },
-    "pinky":  { "open": 180, "closed": 80  }
+    "servo_range_deg": { "min": 0, "max": 180 },
+    "fingers": {
+      "thumb":  { "open": 180, "closed": 80  },
+      "index":  { "open": 0,   "closed": 120 },
+      "middle": { "open": 0,   "closed": 125 },
+      "ring":   { "open": 0,   "closed": 105 },
+      "pinky":  { "open": 180, "closed": 80  }
+    }
   },
 
   "timing": {
