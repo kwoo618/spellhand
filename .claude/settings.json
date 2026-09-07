@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "defaultMode": "default",
+    "allow": [
+      "Bash(python -m pytest:*)",
+      "Bash(bash scripts/verify.sh)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
+    ],
+    "ask": [
+      "Edit(config/**)",
+      "Edit(firmware/**)",
+      "Bash(python tools/gen_calibration.py:*)",
+      "Bash(alembic:*)",
+      "Bash(arduino-cli:*)"
+    ],
+    "deny": [
+      "Read(.env)",
+      "Edit(.env)",
+      "Edit(firmware/hand_controller/calibration.h)",
+      "Edit(station.db)",
+      "Bash(sqlite3:*)",
+      "Bash(rm:*)",
+      "Bash(git push:*)"
+    ]
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "words": ["YES","OWL","OLD","ODE","ELF","WEB","LID","DIE","VIE","FIB",
+            "LOVE","WISE","BODY","WOLF","IDLE","BOLD","SIDE","WIDE","LOSE","SILO","DOVE",
+            "FIELD","SOLID","VIDEO","BLESS","DEVIL","SLIDE","BIBLE",
+            "DIESEL","FOSSIL","BESIDE","WILDLIFE"],
+  "hook_word": "WISE",
+  "hook_fallbacks": ["WILD", "BODY"]
+}
