@@ -5,16 +5,12 @@
 """
 
 import logging
-from datetime import datetime, timedelta
-from pathlib import Path
 
 import pytest
 
-from server.config import load_config
 from server.db import (
     TRACK_DISCRIMINATION,
     TRACK_WORD,
-    Database,
     TrainingSession,
     get_or_create_learner,
 )
@@ -25,7 +21,6 @@ from server.safety import (
     LOCK_HEARTBEAT_SECONDS,
     MAX_DRIVE_REQUESTS_PER_SESSION,
     PURPOSE_DEMO,
-    PURPOSE_ITEM,
     CurriculumViolationError,
     DeviceNotIdleError,
     LockNotHeldError,
@@ -37,41 +32,6 @@ from server.safety import (
     SessionQuotaExceededError,
     UnsupportedLettersError,
 )
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-REAL_POSES = REPO_ROOT / "config" / "poses.json"
-
-
-class FakeClock:
-    """주입식 시계. 가짜 sleep 이 이 시계를 밀어 준다."""
-
-    def __init__(self, start=datetime(2026, 9, 7, 12, 0, 0)):
-        self.now = start
-
-    def __call__(self):
-        return self.now
-
-    def advance(self, seconds):
-        self.now += timedelta(seconds=seconds)
-
-    def sleep(self, seconds):
-        self.advance(seconds)
-
-
-@pytest.fixture
-def config():
-    return load_config(REAL_POSES)
-
-
-@pytest.fixture
-def db():
-    return Database.in_memory()
-
-
-@pytest.fixture
-def clock():
-    return FakeClock()
-
 
 @pytest.fixture
 def device(config, clock):

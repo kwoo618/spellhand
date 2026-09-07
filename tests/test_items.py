@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from server.config import load_config, load_words
+from server.config import load_words
 from server.db import BOUNDARY_DIRECT, BOUNDARY_EXPLICIT, TRACK_DISCRIMINATION, TRACK_WORD
 from server.items import (
     RECENT_ITEM_WINDOW,
@@ -24,13 +24,7 @@ from server.items import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-REAL_POSES = REPO_ROOT / "config" / "poses.json"
 REAL_WORDS = REPO_ROOT / "config" / "words.json"
-
-
-@pytest.fixture
-def config():
-    return load_config(REAL_POSES)
 
 
 @pytest.fixture

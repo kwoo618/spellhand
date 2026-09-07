@@ -7,7 +7,6 @@
 """
 
 import random
-from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -18,13 +17,12 @@ from server.db import (
     BOUNDARY_EXPLICIT,
     TRACK_DISCRIMINATION,
     TRACK_WORD,
-    Database,
     Item,
     TrainingSession,
 )
 from server.device.mock import MockDevice
 from server.items import Difficulty
-from server.safety import LockNotHeldError, SafetyGate, SessionLock
+from server.safety import SafetyGate, SessionLock
 from server.session import (
     DIFFICULTY_LADDER,
     HOLD_DECAY_ON_CORRECT,
@@ -39,38 +37,9 @@ REAL_POSES = REPO_ROOT / "config" / "poses.json"
 REAL_WORDS = REPO_ROOT / "config" / "words.json"
 
 
-class FakeClock:
-    def __init__(self, start=datetime(2026, 9, 7, 12, 0, 0)):
-        self.now = start
-
-    def __call__(self):
-        return self.now
-
-    def advance(self, seconds):
-        self.now += timedelta(seconds=seconds)
-
-    def sleep(self, seconds):
-        self.advance(seconds)
-
-
-@pytest.fixture
-def config():
-    return load_config(REAL_POSES)
-
-
 @pytest.fixture
 def words(config):
     return load_words(REAL_WORDS, letters=config.poses)
-
-
-@pytest.fixture
-def clock():
-    return FakeClock()
-
-
-@pytest.fixture
-def db():
-    return Database.in_memory()
 
 
 @pytest.fixture

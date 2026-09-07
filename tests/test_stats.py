@@ -5,16 +5,13 @@
 """
 
 from datetime import timedelta
-from pathlib import Path
 
 import pytest
 
-from server.config import load_config
 from server.db import (
     TRACK_DISCRIMINATION,
     TRACK_WORD,
     Confusion,
-    Database,
     Item,
     TrainingSession,
     get_or_create_learner,
@@ -28,20 +25,6 @@ from server.stats import (
     track_summary,
     weakest_pairs,
 )
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-REAL_POSES = REPO_ROOT / "config" / "poses.json"
-
-
-@pytest.fixture
-def config():
-    return load_config(REAL_POSES)
-
-
-@pytest.fixture
-def db():
-    return Database.in_memory()
-
 
 class Recorder:
     """테스트용 문항 기록기. 시각을 조금씩 밀어 응답 시간을 만든다."""

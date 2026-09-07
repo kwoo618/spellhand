@@ -3,12 +3,8 @@
 시간은 전부 주입한다. 이 파일 전체가 초 단위로 걸리면 주입이 새고 있는 것이다.
 """
 
-import logging
-from pathlib import Path
-
 import pytest
 
-from server.config import load_config
 from server.device import (
     PERMILLE_MAX,
     DeviceBusyError,
@@ -18,15 +14,6 @@ from server.device import (
     pose_to_permille,
 )
 from server.device.mock import MockDevice
-
-REPO_ROOT = Path(__file__).resolve().parent.parent
-REAL_POSES = REPO_ROOT / "config" / "poses.json"
-
-
-@pytest.fixture
-def config():
-    return load_config(REAL_POSES)
-
 
 class Clock:
     """즉시 반환하는 가짜 sleep. 호출될 때마다 훅을 실행한다."""

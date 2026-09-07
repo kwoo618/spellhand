@@ -22,11 +22,6 @@ from server.db import (
 )
 
 
-@pytest.fixture
-def db():
-    return Database.in_memory()
-
-
 def make_session(session, *, name="haru", status="running"):
     learner = get_or_create_learner(session, name)
     row = TrainingSession(

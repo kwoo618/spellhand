@@ -28,11 +28,6 @@ CALIBRATION_LOGGER = "server.calibration"
 
 
 @pytest.fixture
-def config():
-    return load_config(REAL_POSES)
-
-
-@pytest.fixture
 def written(tmp_path):
     def _write(data):
         path = tmp_path / "poses.json"
