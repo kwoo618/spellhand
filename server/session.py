@@ -22,6 +22,7 @@ from typing import Callable, Dict, List, Mapping, Optional, Protocol, Tuple
 from server import judge as judge_module
 from server.config import Config, WordSet
 from server.db import (
+    BOUNDARIES,
     BOUNDARY_DIRECT,
     BOUNDARY_EXPLICIT,
     RESULT_CORRECT,
@@ -216,10 +217,15 @@ class RuleAdaptation:
             # ①축이 아직 남아 있다.
             return replace(difficulty, hold_ms=hold)
 
-        # ①축 바닥. ②·③축으로 넘어간다. 유지 시간은 바닥에 둔 채로 둔다 —
-        # PRD 9.4 는 "그 뒤 정답은 length 증가 또는 direct 전환으로 넘어간다"
-        # 라고만 하고 유지 시간을 되돌린다고 하지 않는다 (DECISIONS.md §23).
-        return replace(difficulty, hold_ms=hold, **_next_rung(difficulty))
+        rung = _next_rung(difficulty)
+        if not rung:
+            # 사다리 꼭대기. 더 올릴 축이 없다.
+            return replace(difficulty, hold_ms=hold)
+
+        # ①축 바닥에서 ②·③축으로 올라간다. 이때 **유지 시간을 되돌린다.**
+        # 새 단에서 ①축을 다시 걸어 내려갈 수 있어야 세 축이 독립적으로
+        # 움직인다 (DECISIONS.md §23).
+        return replace(difficulty, hold_ms=timing.hold_default_ms, **rung)
 
     def on_wrong_first(self, difficulty: Difficulty, config: Config) -> Difficulty:
         timing = config.timing
@@ -240,18 +246,23 @@ class RuleAdaptation:
         )
 
 
+def _rung_rank(length: int, boundary: str) -> Tuple[int, int]:
+    """사다리 위 위치. 길이가 먼저고, 같은 길이면 direct 가 더 어렵다."""
+    return (length, BOUNDARIES.index(boundary))
+
+
 def _next_rung(difficulty: Difficulty) -> Dict[str, object]:
-    """사다리에서 한 칸 올라간다. 꼭대기면 그대로."""
-    current = (difficulty.length, difficulty.boundary)
-    try:
-        index = DIFFICULTY_LADDER.index(current)
-    except ValueError:
-        # 사다리에 없는 조합이면 길이만 올린다.
-        return {}
-    if index + 1 >= len(DIFFICULTY_LADDER):
-        return {}
-    length, boundary = DIFFICULTY_LADDER[index + 1]
-    return {"length": length, "boundary": boundary}
+    """지금보다 한 단 어려운 칸. 꼭대기면 빈 dict.
+
+    사다리에 정확히 없는 조합에서도 답을 낸다. `on_wrong_second` 가 길이를
+    1 줄이면 (4, explicit) 처럼 사다리에 없는 자리에 서게 되는데, 그때 "다음
+    칸 없음"으로 처리하면 후퇴한 학습자가 다시는 올라가지 못한다.
+    """
+    current = _rung_rank(difficulty.length, difficulty.boundary)
+    for length, boundary in DIFFICULTY_LADDER:
+        if _rung_rank(length, boundary) > current:
+            return {"length": length, "boundary": boundary}
+    return {}
 
 
 # --------------------------------------------------------------------------- #

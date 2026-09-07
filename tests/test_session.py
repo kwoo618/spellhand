@@ -341,18 +341,93 @@ def test_after_the_floor_the_second_and_third_axes_advance(config):
         boundary=BOUNDARY_EXPLICIT,
     )
     rungs = [(difficulty.length, difficulty.boundary)]
-    for _ in range(4):
+    for _ in range(3):
+        # 각 단에서 ①축이 되살아나므로, 다음 단으로 오르려면 다시 바닥까지
+        # 내려가야 한다.
         difficulty = rule.on_correct(difficulty, config)
         rungs.append((difficulty.length, difficulty.boundary))
+        while difficulty.hold_ms > config.timing.hold_min_ms:
+            difficulty = rule.on_correct(difficulty, config)
 
-    assert rungs == [
-        (3, BOUNDARY_EXPLICIT),
-        (5, BOUNDARY_EXPLICIT),
-        (5, BOUNDARY_DIRECT),
-        (7, BOUNDARY_DIRECT),
-        (7, BOUNDARY_DIRECT),  # 꼭대기에서는 더 오르지 않는다
-    ]
-    assert rungs[:4] == list(DIFFICULTY_LADDER)
+    assert rungs == list(DIFFICULTY_LADDER)
+
+
+def test_the_top_rung_stays_put(config):
+    rule = RuleAdaptation()
+    difficulty = Difficulty(
+        length=7,
+        hold_ms=config.timing.hold_min_ms,
+        transition_ms=config.timing.transition_ms,
+        boundary=BOUNDARY_DIRECT,
+    )
+    for _ in range(5):
+        difficulty = rule.on_correct(difficulty, config)
+        assert (difficulty.length, difficulty.boundary) == DIFFICULTY_LADDER[-1]
+        assert difficulty.hold_ms == config.timing.hold_min_ms
+
+
+def test_the_hold_axis_is_restored_when_a_rung_is_climbed(config):
+    """①축은 양방향이다 — 단을 올라갈 때 유지 시간이 되돌아온다.
+
+    되돌리지 않으면 새 단의 첫 문항이 곧바로 최단 유지로 나온다. 길이가 3에서
+    5로 늘어난 그 문항이 동시에 ①축 최대 난이도라는 뜻이고, 두 축이 한꺼번에
+    올라가 버린다. 그러면 어느 축 때문에 틀렸는지 알 수 없다 (DECISIONS.md §23).
+    """
+    rule = RuleAdaptation()
+    difficulty = Difficulty(
+        length=3,
+        hold_ms=config.timing.hold_min_ms,
+        transition_ms=config.timing.transition_ms,
+        boundary=BOUNDARY_EXPLICIT,
+    )
+    climbed = rule.on_correct(difficulty, config)
+
+    assert climbed.length == 5, "②축이 올라간다"
+    assert climbed.hold_ms == config.timing.hold_default_ms, "①축은 되돌아온다"
+    assert climbed.hold_ms > difficulty.hold_ms
+
+
+def test_the_full_climb_walks_every_rung_and_every_hold(config):
+    """정답만 계속하면 4단 x 4단계를 모두 지난다."""
+    rule = RuleAdaptation()
+    difficulty = Difficulty(
+        length=3,
+        hold_ms=config.timing.hold_default_ms,
+        transition_ms=config.timing.transition_ms,
+        boundary=BOUNDARY_EXPLICIT,
+    )
+    seen = []
+    for _ in range(16):
+        seen.append((difficulty.length, difficulty.boundary, difficulty.hold_ms))
+        difficulty = rule.on_correct(difficulty, config)
+
+    assert len(set(seen)) == 16, "16개 자리가 모두 서로 다르다"
+    assert seen[0] == (3, BOUNDARY_EXPLICIT, config.timing.hold_default_ms)
+    assert seen[-1] == (7, BOUNDARY_DIRECT, config.timing.hold_min_ms)
+    for length, boundary, _hold in seen:
+        assert (length, boundary) in DIFFICULTY_LADDER
+
+
+def test_a_learner_who_retreated_can_climb_back(config):
+    """오답 2회로 길이가 사다리 밖(4글자)으로 내려가도 다시 올라갈 수 있다.
+
+    사다리에 정확히 일치하는 칸만 인정하면 후퇴한 학습자가 영영 갇힌다.
+    """
+    rule = RuleAdaptation()
+    at_five = Difficulty(
+        length=5,
+        hold_ms=config.timing.hold_min_ms,
+        transition_ms=config.timing.transition_ms,
+        boundary=BOUNDARY_EXPLICIT,
+    )
+    retreated = rule.on_wrong_second(at_five, config)
+    assert retreated.length == 4
+    assert (retreated.length, retreated.boundary) not in DIFFICULTY_LADDER
+
+    difficulty = retreated
+    for _ in range(6):
+        difficulty = rule.on_correct(difficulty, config)
+    assert difficulty.length >= 5, "사다리 밖에서도 다시 올라온다"
 
 
 def test_hold_never_leaves_the_configured_band(config):
