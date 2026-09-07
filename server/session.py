@@ -65,7 +65,13 @@ __all__ = [
     "SessionSummary",
     "Adaptation",
     "RuleAdaptation",
+    "SessionController",
     "SessionRunner",
+    "SessionState",
+    "AnswerOutcome",
+    "SessionError",
+    "SessionStateError",
+    "SessionFinishedError",
 ]
 
 logger = logging.getLogger(__name__)
@@ -269,8 +275,64 @@ def _next_rung(difficulty: Difficulty) -> Dict[str, object]:
 # 세션 루프
 # --------------------------------------------------------------------------- #
 
-class SessionRunner:
-    """한 세션을 끝까지 돌린다."""
+class SessionError(Exception):
+    """세션 진행 중의 구조화된 실패. 라우트가 코드 그대로 실어 보낸다."""
+
+    code = "SESSION_ERROR"
+    http_status = 400
+
+
+class SessionStateError(SessionError):
+    """지금 단계에서 할 수 없는 요청이다 (예: 표현 전에 답을 제출)."""
+
+    code = "SESSION_STATE"
+    http_status = 409
+
+
+class SessionFinishedError(SessionError):
+    """계획된 문항을 모두 냈다."""
+
+    code = "SESSION_FINISHED"
+    http_status = 409
+
+
+class SessionState:
+    """세션이 지금 무엇을 기다리는가."""
+
+    AWAITING_ITEM = "awaiting_item"
+    AWAITING_PRESENT = "awaiting_present"
+    AWAITING_ANSWER = "awaiting_answer"
+    FINISHED = "finished"
+
+
+@dataclass(frozen=True)
+class AnswerOutcome:
+    """채점 결과 중 **클라이언트로 나가도 되는 부분**.
+
+    재생(`retry=True`)이 뒤따르면 `expected` 와 `confusions` 는 비어 있다.
+    오답 1회째에는 정답을 알려주지 않기 때문이다 (기획서 5.2). 이 규칙이
+    깨지면 재생이 의미를 잃는다.
+    """
+
+    seq: int
+    result: str
+    retry: bool
+    finished: bool
+    expected: Optional[str]
+    confusions: Tuple[judge_module.Confusion, ...]
+    demo: Optional[DemoShown]
+
+
+class SessionController:
+    """세션을 **단계별로** 진행한다.
+
+    PRD 11장의 REST 흐름(`/next` → `/present` → `/answer`)이 이 순서 그대로다.
+    `SessionRunner` 는 이 위를 도는 얇은 루프일 뿐이다 — 웹과 테스트가 같은
+    코드를 지나게 하려고 이렇게 나눴다.
+
+    `on_event` 로 진행 상황을 흘려보낸다. WS 브로드캐스트가 여기 붙는다.
+    **정답은 재생이 남아 있는 동안 이벤트로 나가지 않는다.**
+    """
 
     def __init__(
         self,
@@ -284,6 +346,7 @@ class SessionRunner:
         adaptation: Optional[Adaptation] = None,
         clock: Callable[[], datetime] = utcnow,
         rng: Optional[random.Random] = None,
+        on_event: Optional[Callable[[Dict[str, object]], None]] = None,
     ) -> None:
         self._config = config
         self._words = words
@@ -294,156 +357,346 @@ class SessionRunner:
         self._adaptation = adaptation or RuleAdaptation()
         self._clock = clock
         self._rng = rng or random.Random()
+        self._on_event = on_event
+
+        self._state = SessionState.AWAITING_ITEM
+        self._session_id: Optional[int] = None
+        self._learner_id: Optional[int] = None
+        self._plan = SessionPlan()
+        self._schedule: List[str] = []
+        self._seq = 0
+        self._difficulty: Optional[Difficulty] = None
+        self._active_spec: Optional[ItemSpec] = None
+        self._active_key: Optional[_AnswerKey] = None
+        self._attempt = 1
+        self._retry_pending = False
+        self._presented_at: Optional[datetime] = None
+        self._ready_at: Optional[datetime] = None
+        self._outcomes: List[ItemOutcome] = []
+        self._last_demo: Optional[DemoShown] = None
+        self._heavy_caps: Mapping[str, int] = {}
+        self._heavy_used: Dict[str, int] = {}
+        self._ended = False
 
     # ------------------------------------------------------------------ #
+    # 상태
+    # ------------------------------------------------------------------ #
 
-    def run(
+    @property
+    def session_id(self) -> int:
+        if self._session_id is None:
+            raise SessionStateError("session has not been started")
+        return self._session_id
+
+    @property
+    def learner_id(self) -> int:
+        if self._learner_id is None:
+            raise SessionStateError("session has not been started")
+        return self._learner_id
+
+    @property
+    def state(self) -> str:
+        return self._state
+
+    @property
+    def total_items(self) -> int:
+        return self._plan.discrimination_items + self._plan.word_items
+
+    @property
+    def index(self) -> int:
+        """지금 몇 번째 문항인가 (1부터). 아직 없으면 0."""
+        return self._seq
+
+    @property
+    def finished(self) -> bool:
+        return self._state == SessionState.FINISHED
+
+    @property
+    def has_demo(self) -> bool:
+        """현재 문항에 대해 시범이 나온 적이 있는가. 재생 가능 여부다."""
+        return self._last_demo is not None
+
+    def _active_answer(self) -> str:
+        """서버 내부용 정답. **라우트는 절대 호출하지 않는다** (DECISIONS §22)."""
+        if self._active_key is None:
+            raise SessionStateError("no item is active")
+        return self._active_key.letters
+
+    def _emit(self, type_: str, **fields: object) -> None:
+        if self._on_event is None:
+            return
+        event: Dict[str, object] = {"type": type_}
+        event.update(fields)
+        self._on_event(event)
+
+    def _require(self, *states: str) -> None:
+        if self._state not in states:
+            raise SessionStateError(
+                f"session is {self._state!r}, expected one of {list(states)}"
+            )
+
+    # ------------------------------------------------------------------ #
+    # 단계
+    # ------------------------------------------------------------------ #
+
+    def start(
         self,
         learner_name: str,
-        answer_provider: AnswerProvider,
         *,
         plan: Optional[SessionPlan] = None,
         source: str = "rule",
-    ) -> SessionSummary:
-        plan = plan or SessionPlan()
-        session_id, learner_id = self._open_session(learner_name, plan, source)
-        self._lock.acquire(session_id)
+    ) -> int:
+        """세션 행을 만들고 디바이스 락을 잡는다."""
+        if self._session_id is not None:
+            raise SessionStateError("this controller already ran a session")
 
-        outcomes: List[ItemOutcome] = []
-        try:
-            difficulty = Difficulty(
-                length=DIFFICULTY_LADDER[0][0],
-                hold_ms=self._config.timing.hold_default_ms,
-                transition_ms=self._config.timing.transition_ms,
-                boundary=DIFFICULTY_LADDER[0][1],
-            )
-            seq = 0
-            # heavy_letters 비율은 세션 전체 문항 수 기준이다. 문항을 하나씩
-            # 만들더라도 예산은 여기서 한 번 잡고 소진해 나간다.
-            heavy_caps = heavy_letter_caps(
-                self._config, plan.discrimination_items
-            )
-            heavy_used: Dict[str, int] = {letter: 0 for letter in heavy_caps}
-            for track, count in (
-                (TRACK_DISCRIMINATION, plan.discrimination_items),
-                (TRACK_WORD, plan.word_items),
-            ):
-                for _ in range(count):
-                    seq += 1
-                    self._lock.heartbeat(session_id)
-                    difficulty, item_outcomes = self._run_one_item(
-                        session_id=session_id,
-                        learner_id=learner_id,
-                        seq=seq,
-                        track=track,
-                        difficulty=difficulty,
-                        answer_provider=answer_provider,
-                        heavy_caps=heavy_caps,
-                        heavy_used=heavy_used,
-                    )
-                    outcomes.extend(item_outcomes)
-            self._close_session(session_id, status="done")
-        except Exception:
-            self._close_session(session_id, status="aborted")
-            raise
-        finally:
-            # 세션이 어떻게 끝나든 손은 쉬는 자세로 돌아간다 (R3).
-            self._device.safe()
-            self._lock.release(session_id)
-
-        return self._summarize(session_id, learner_id, tuple(outcomes))
-
-    # ------------------------------------------------------------------ #
-
-    def _run_one_item(
-        self,
-        *,
-        session_id: int,
-        learner_id: int,
-        seq: int,
-        track: str,
-        difficulty: Difficulty,
-        answer_provider: AnswerProvider,
-        heavy_caps: Mapping[str, int],
-        heavy_used: Dict[str, int],
-    ) -> Tuple[Difficulty, Tuple[ItemOutcome, ...]]:
-        """문항 하나를 최대 2회 시도까지 진행하고, 다음 난이도를 돌려준다."""
-        spec = self._generate(
-            session_id, learner_id, track, difficulty, heavy_caps, heavy_used
+        self._plan = plan or SessionPlan()
+        session_id, learner_id = self._open_session(
+            learner_name, self._plan, source
         )
-        for letter in heavy_used:
-            if letter in spec.letters:
-                heavy_used[letter] += 1
-        outcomes: List[ItemOutcome] = []
+        self._lock.acquire(session_id)
+        self._session_id = session_id
+        self._learner_id = learner_id
 
-        for attempt in (1, 2):
-            unlocked = self._depth_unlocked(learner_id)
-            presented_at, ready_at = self._present(
-                session_id, spec, depth_unlocked=unlocked
+        self._schedule = [TRACK_DISCRIMINATION] * self._plan.discrimination_items
+        self._schedule += [TRACK_WORD] * self._plan.word_items
+        self._difficulty = Difficulty(
+            length=DIFFICULTY_LADDER[0][0],
+            hold_ms=self._config.timing.hold_default_ms,
+            transition_ms=self._config.timing.transition_ms,
+            boundary=DIFFICULTY_LADDER[0][1],
+        )
+        # heavy_letters 비율은 세션 전체 문항 수 기준이다 (DECISIONS §19).
+        self._heavy_caps = heavy_letter_caps(
+            self._config, self._plan.discrimination_items
+        )
+        self._heavy_used = {letter: 0 for letter in self._heavy_caps}
+        self._state = (
+            SessionState.FINISHED
+            if not self._schedule
+            else SessionState.AWAITING_ITEM
+        )
+        return session_id
+
+    def next_item(self) -> ItemPrompt:
+        """다음 문항을 만든다. 재생이 걸려 있으면 같은 문항을 2회째로 돌려준다."""
+        self._require(SessionState.AWAITING_ITEM)
+        if not self._schedule and not self._retry_pending:
+            self._state = SessionState.FINISHED
+            raise SessionFinishedError(
+                f"all {self.total_items} items have been presented"
             )
-            prompt = ItemPrompt(
-                seq=seq,
+
+        if self._retry_pending:
+            # 같은 문항을 느린 속도·또박또박으로 다시 낸다. 정답은 알려주지
+            # 않는다 (기획서 5.2).
+            self._retry_pending = False
+            self._attempt = 2
+        else:
+            track = self._schedule.pop(0)
+            self._seq += 1
+            self._attempt = 1
+            spec = self._generate(
+                self.session_id, self.learner_id, track, self._difficulty
+            )
+            for letter in self._heavy_used:
+                if letter in spec.letters:
+                    self._heavy_used[letter] += 1
+            self._active_spec = spec
+            self._active_key = _AnswerKey(seq=self._seq, letters=spec.letters)
+            self._last_demo = None
+
+        self._state = SessionState.AWAITING_PRESENT
+        return self._prompt()
+
+    def _prompt(self) -> ItemPrompt:
+        spec = self._active_spec
+        assert spec is not None
+        return ItemPrompt(
+            seq=self._seq,
+            track=spec.track,
+            length=len(spec.letters),
+            boundary=spec.boundary,
+            hold_ms=spec.hold_ms,
+            transition_ms=spec.transition_ms,
+            attempt=self._attempt,
+        )
+
+    def current_prompt(self) -> ItemPrompt:
+        self._require(SessionState.AWAITING_PRESENT, SessionState.AWAITING_ANSWER)
+        return self._prompt()
+
+    def present(self) -> None:
+        """현재 문항을 손으로 표현한다. 구동 요청 1건이다.
+
+        `AWAITING_ANSWER` 에서 다시 불러도 된다 — 화면의 "다시 보기"가 그것이다.
+        재생도 안전 게이트를 통과하고 구동 요청으로 계산된다.
+        """
+        self._require(SessionState.AWAITING_PRESENT, SessionState.AWAITING_ANSWER)
+        spec = self._active_spec
+        assert spec is not None
+
+        self._emit(
+            "presenting",
+            index=self._seq,
+            total=self.total_items,
+            track=spec.track,
+            length=len(spec.letters),
+            attempt=self._attempt,
+        )
+        presented_at, ready_at = self._present(
+            self.session_id,
+            spec,
+            depth_unlocked=self._depth_unlocked(self.learner_id),
+        )
+        self._presented_at = presented_at
+        self._ready_at = ready_at
+        self._state = SessionState.AWAITING_ANSWER
+        self._emit("done", index=self._seq)
+
+    def submit(self, answer: str) -> AnswerOutcome:
+        """응답을 채점하고 기록한 뒤 난이도를 옮긴다."""
+        self._require(SessionState.AWAITING_ANSWER)
+        spec = self._active_spec
+        key = self._active_key
+        assert spec is not None and key is not None
+
+        answered_at = self._clock()
+        judgement = judge_module.judge(key.letters, answer)
+        self._record(
+            session_id=self.session_id,
+            seq=self._seq,
+            spec=spec,
+            attempt=self._attempt,
+            answer=answer,
+            judgement=judgement,
+            presented_at=self._presented_at,
+            ready_at=self._ready_at,
+            answered_at=answered_at,
+        )
+
+        correct = judgement.result == RESULT_CORRECT
+        retry = (not correct) and self._attempt == 1
+        demo: Optional[DemoShown] = None
+
+        if correct:
+            self._difficulty = self._adaptation.on_correct(
+                self._difficulty, self._config
+            )
+        elif retry:
+            retried = self._adaptation.on_wrong_first(self._difficulty, self._config)
+            self._active_spec = ItemSpec(
                 track=spec.track,
-                length=len(spec.letters),
-                boundary=spec.boundary,
-                hold_ms=spec.hold_ms,
-                transition_ms=spec.transition_ms,
-                attempt=attempt,
+                letters=spec.letters,
+                hold_ms=retried.hold_ms,
+                transition_ms=retried.transition_ms,
+                boundary=BOUNDARY_EXPLICIT,
             )
-            # 정답은 서버가 들고 있고 응답기에는 별도 인자로만 건넨다.
-            # 클라이언트로 나가는 것은 prompt 뿐이다.
-            key = _AnswerKey(seq=seq, letters=spec.letters)
-            answer = answer_provider(prompt, key.letters)
-            answered_at = self._clock()
-            judgement = judge_module.judge(key.letters, answer)
-
-            self._record(
-                session_id=session_id,
-                seq=seq,
-                spec=spec,
-                attempt=attempt,
-                answer=answer,
-                judgement=judgement,
-                presented_at=presented_at,
-                ready_at=ready_at,
-                answered_at=answered_at,
-            )
-
-            if judgement.result == RESULT_CORRECT:
-                outcomes.append(
-                    _outcome(seq, spec, attempt, answer, judgement, demo=None)
-                )
-                return self._adaptation.on_correct(difficulty, self._config), tuple(
-                    outcomes
-                )
-
-            if attempt == 1:
-                # 같은 문항을 느린 속도·또박또박으로 다시 낸다. 정답은 알려주지
-                # 않는다 (기획서 5.2).
-                outcomes.append(
-                    _outcome(seq, spec, attempt, answer, judgement, demo=None)
-                )
-                retried = self._adaptation.on_wrong_first(difficulty, self._config)
-                spec = ItemSpec(
-                    track=spec.track,
-                    letters=spec.letters,
-                    hold_ms=retried.hold_ms,
-                    transition_ms=retried.transition_ms,
-                    boundary=BOUNDARY_EXPLICIT,
-                )
-                difficulty = retried
-                continue
-
+            self._difficulty = retried
+            self._retry_pending = True
+        else:
             # 2회째 오답. 혼동한 두 글자를 나란히 시범한 뒤 후퇴한다.
-            demo = self._demo_pair(session_id, spec.track, judgement)
-            outcomes.append(
-                _outcome(seq, spec, attempt, answer, judgement, demo=demo)
-            )
-            return self._adaptation.on_wrong_second(difficulty, self._config), tuple(
-                outcomes
+            demo = self._demo_pair(self.session_id, spec.track, judgement)
+            self._last_demo = demo
+            self._difficulty = self._adaptation.on_wrong_second(
+                self._difficulty, self._config
             )
 
-        raise AssertionError("unreachable")
+        self._outcomes.append(
+            _outcome(self._seq, spec, self._attempt, answer, judgement, demo=demo)
+        )
+
+        if retry:
+            # 정답도 혼동 내역도 내보내지 않는다. 재생이 남아 있기 때문이다.
+            self._emit(
+                "judged", index=self._seq, result=judgement.result, retry=True
+            )
+        else:
+            self._emit(
+                "judged",
+                index=self._seq,
+                result=judgement.result,
+                retry=False,
+                expected=key.letters,
+                confusions=[
+                    {
+                        "position": c.position,
+                        "expected": c.expected,
+                        "given": c.given,
+                    }
+                    for c in judgement.confusions
+                ],
+            )
+            if demo is not None:
+                self._emit(
+                    "demo", letters=[demo.expected, demo.given], hint=demo.hint
+                )
+
+        session_done = not retry and not self._schedule
+        self._state = (
+            SessionState.FINISHED if session_done else SessionState.AWAITING_ITEM
+        )
+
+        return AnswerOutcome(
+            seq=self._seq,
+            result=judgement.result,
+            retry=retry,
+            finished=session_done,
+            expected=None if retry else key.letters,
+            confusions=() if retry else judgement.confusions,
+            demo=demo,
+        )
+
+    def replay_demo(self) -> DemoShown:
+        """직전에 보여 준 시범을 다시 보여 준다.
+
+        시범이 나온 적 없는 문항에서는 거부한다 — 시범은 혼동한 두 글자를 나란히
+        보여 주는 것이라 그 자체가 정답 공개다. 아직 답을 맞혀야 하는 문항에
+        대해 요청을 받아 주면 재생의 의미가 사라진다 (DECISIONS.md §26).
+        """
+        if self._last_demo is None:
+            raise SessionStateError(
+                "no demo has been shown for the current item; a demo is only "
+                "available after a second wrong answer"
+            )
+        demo = self._last_demo
+        spec = self._active_spec
+        self._demo_letters(
+            self.session_id,
+            spec.track if spec is not None else TRACK_DISCRIMINATION,
+            demo.expected,
+            demo.given,
+        )
+        self._emit("demo", letters=[demo.expected, demo.given], hint=demo.hint)
+        return demo
+
+    def heartbeat(self) -> None:
+        self._lock.heartbeat(self.session_id)
+
+    def stop(self) -> None:
+        """비상 정지. 손을 즉시 안전 자세로 만든다."""
+        self._device.stop()
+        self._emit("error", code="STOPPED")
+
+    def end(self, *, status: Optional[str] = None) -> SessionSummary:
+        """세션을 닫고 락을 놓고 요약을 만든다. 두 번 불러도 안전하다."""
+        session_id = self.session_id
+        if not self._ended:
+            if status is None:
+                status = "done" if self.finished else "aborted"
+            self._close_session(session_id, status=status)
+            try:
+                self._device.safe()
+            finally:
+                self._lock.release(session_id)
+            self._ended = True
+        self._state = SessionState.FINISHED
+        summary = self._summarize(
+            session_id, self.learner_id, tuple(self._outcomes)
+        )
+        self._emit("ended", index=self._seq, total=self.total_items)
+        return summary
+
 
     # ------------------------------------------------------------------ #
 
@@ -453,9 +706,10 @@ class SessionRunner:
         learner_id: int,
         track: str,
         difficulty: Difficulty,
-        heavy_caps: Mapping[str, int],
-        heavy_used: Mapping[str, int],
     ) -> ItemSpec:
+        # heavy_letters 예산은 세션 상태다. 문항마다 다시 계산하지 않는다.
+        heavy_caps = self._heavy_caps
+        heavy_used = self._heavy_used
         with self._db.session() as db:
             recent = recent_letters(
                 db, track, window=RECENT_ITEM_WINDOW, learner_id=learner_id
@@ -523,6 +777,8 @@ class SessionRunner:
                 # 또박또박 모드: 글자 사이에 중립 자세로 경계를 만든다.
                 self._device.neutral()
             self._device.move_to(pose, spec.transition_ms, spec.hold_ms)
+            # 글자별 도달 알림. 어느 글자인지는 보내지 않는다 — 위치만이다.
+            self._emit("ready", index=self._seq, letter_pos=index)
 
         # 관찰 시간의 기준점은 마지막 글자의 **도달** 시점이다. 동기 어댑터는
         # 유지까지 끝난 뒤에 돌아오므로 유지 시간만큼 되돌려 잡는다
@@ -542,10 +798,20 @@ class SessionRunner:
             return None
 
         first = judgement.confusions[0]
-        letters = first.expected + first.given
+        self._demo_letters(session_id, track, first.expected, first.given)
+        return DemoShown(
+            expected=first.expected,
+            given=first.given,
+            hint=self._hint_for(first.expected, first.given),
+        )
+
+    def _demo_letters(
+        self, session_id: int, track: str, expected: str, given: str
+    ) -> None:
+        """두 글자를 중립을 사이에 두고 나란히 보여 준다. 구동 요청 1건이다."""
         poses = self._gate.authorize_sequence(
             session_id,
-            letters,
+            expected + given,
             track,
             depth_unlocked=True,  # 시범은 커리큘럼 검사 면제 (PRD 10장 ③)
             purpose=PURPOSE_DEMO,
@@ -556,12 +822,6 @@ class SessionRunner:
             if index:
                 self._device.neutral()
             self._device.move_to(pose, self._config.timing.transition_ms, hold)
-
-        return DemoShown(
-            expected=first.expected,
-            given=first.given,
-            hint=self._hint_for(first.expected, first.given),
-        )
 
     def _hint_for(self, a: str, b: str) -> Optional[str]:
         """혼동쌍 힌트. 목록에 없는 쌍이면 힌트가 없다 — 시범 자체는 보여 준다."""
@@ -664,6 +924,42 @@ class SessionRunner:
             outcomes=outcomes,
         )
 
+
+class SessionRunner:
+    """한 세션을 끝까지 돌린다. `SessionController` 위의 얇은 루프다.
+
+    웹은 같은 컨트롤러를 REST 요청으로 한 단계씩 민다. 두 경로가 같은 코드를
+    지나므로, 통합 테스트가 확인한 것이 실제 서버에서도 그대로다.
+    """
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        self._args = args
+        self._kwargs = kwargs
+
+    def controller(self) -> "SessionController":
+        return SessionController(*self._args, **self._kwargs)  # type: ignore[arg-type]
+
+    def run(
+        self,
+        learner_name: str,
+        answer_provider: AnswerProvider,
+        *,
+        plan: Optional[SessionPlan] = None,
+        source: str = "rule",
+    ) -> SessionSummary:
+        controller = self.controller()
+        controller.start(learner_name, plan=plan, source=source)
+        try:
+            while not controller.finished:
+                prompt = controller.next_item()
+                controller.present()
+                # 정답은 인자로만 건넨다. prompt 에는 들어 있지 않다.
+                answer = answer_provider(prompt, controller._active_answer())
+                controller.submit(answer)
+        except Exception:
+            controller.end(status="aborted")
+            raise
+        return controller.end(status="done")
 
 def _outcome(
     seq: int,
