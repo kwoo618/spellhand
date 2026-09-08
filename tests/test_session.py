@@ -312,23 +312,49 @@ def test_order_errors_land_in_their_own_column(runner):
 # 적응 규칙 (PRD 9.4)
 # --------------------------------------------------------------------------- #
 
-def test_hold_time_bottoms_out_in_three_steps(config):
-    """3000 → 2550 → 2167 → 2000. ①축은 3단계뿐이다."""
+def hold_chain(config):
+    """한 단에서 유지 시간이 바닥까지 내려가는 경로. 설정에서 나온다."""
     rule = RuleAdaptation()
     difficulty = Difficulty(
-        length=3,
+        length=DIFFICULTY_LADDER[0][0],
         hold_ms=config.timing.hold_default_ms,
         transition_ms=config.timing.transition_ms,
-        boundary=BOUNDARY_EXPLICIT,
+        boundary=DIFFICULTY_LADDER[0][1],
     )
     holds = [difficulty.hold_ms]
-    for _ in range(3):
-        difficulty = rule.on_correct(difficulty, config)
+    while True:
+        nxt = rule.on_correct(difficulty, config)
+        if nxt.hold_ms >= difficulty.hold_ms:
+            return holds
+        difficulty = nxt
         holds.append(difficulty.hold_ms)
 
-    assert holds == [3000, 2550, 2167, 2000]
-    assert difficulty.length == 3
-    assert difficulty.boundary == BOUNDARY_EXPLICIT
+
+def test_hold_time_walks_down_to_the_configured_floor(config):
+    """유지 시간은 hold_default 에서 hold_min 까지 0.85 배씩 내려간다.
+
+    단계 수는 설정이 정한다. 하한이 2000 이던 때는 3단계뿐이라 ①축이 사실상
+    죽은 축이었고, 800 으로 내려간 뒤 9단계가 되었다 (DECISIONS.md §7).
+    """
+    holds = hold_chain(config)
+
+    assert holds[0] == config.timing.hold_default_ms
+    assert holds[-1] == config.timing.hold_min_ms
+    assert holds == sorted(holds, reverse=True), "단조 감소한다"
+    assert len(set(holds)) == len(holds), "같은 값을 두 번 거치지 않는다"
+    # 실측 하한 800ms 기준. 하한을 다시 옮기면 여기서 걸린다.
+    assert holds == [3000, 2550, 2167, 1841, 1564, 1329, 1129, 959, 815, 800]
+
+
+def test_the_hold_axis_is_no_longer_a_dead_axis(config):
+    """①축이 되살아났다는 것을 숫자로 고정한다.
+
+    하한 2000 일 때는 3000→2550→2167→2000 의 3단계뿐이었다. 조절 폭이 1.5배에
+    불과해 순간 판별 훈련이 성립하지 않았다 (기획서 3.2 "①축 약화").
+    """
+    holds = hold_chain(config)
+    assert len(holds) - 1 >= 5, "감소 단계가 최소 5회는 되어야 축이라 할 수 있다"
+    assert holds[0] / holds[-1] >= 3.0, "조절 폭이 3배 이상"
 
 
 def test_after_the_floor_the_second_and_third_axes_advance(config):
@@ -388,24 +414,38 @@ def test_the_hold_axis_is_restored_when_a_rung_is_climbed(config):
 
 
 def test_the_full_climb_walks_every_rung_and_every_hold(config):
-    """정답만 계속하면 4단 x 4단계를 모두 지난다."""
+    """정답만 계속하면 (단 x 유지 단계) 자리를 모두 지나고 꼭대기에서 멈춘다."""
     rule = RuleAdaptation()
+    steps_per_rung = len(hold_chain(config))
+    total = len(DIFFICULTY_LADDER) * steps_per_rung
+
     difficulty = Difficulty(
-        length=3,
+        length=DIFFICULTY_LADDER[0][0],
         hold_ms=config.timing.hold_default_ms,
         transition_ms=config.timing.transition_ms,
-        boundary=BOUNDARY_EXPLICIT,
+        boundary=DIFFICULTY_LADDER[0][1],
     )
     seen = []
-    for _ in range(16):
+    for _ in range(total):
         seen.append((difficulty.length, difficulty.boundary, difficulty.hold_ms))
         difficulty = rule.on_correct(difficulty, config)
 
-    assert len(set(seen)) == 16, "16개 자리가 모두 서로 다르다"
-    assert seen[0] == (3, BOUNDARY_EXPLICIT, config.timing.hold_default_ms)
-    assert seen[-1] == (7, BOUNDARY_DIRECT, config.timing.hold_min_ms)
+    assert len(set(seen)) == total, f"{total}개 자리가 모두 서로 다르다"
+    assert seen[0] == (
+        DIFFICULTY_LADDER[0][0],
+        DIFFICULTY_LADDER[0][1],
+        config.timing.hold_default_ms,
+    )
+    assert seen[-1] == (
+        DIFFICULTY_LADDER[-1][0],
+        DIFFICULTY_LADDER[-1][1],
+        config.timing.hold_min_ms,
+    )
     for length, boundary, _hold in seen:
         assert (length, boundary) in DIFFICULTY_LADDER
+
+    # 꼭대기에서는 더 오르지 않는다.
+    assert rule.on_correct(difficulty, config) == difficulty
 
 
 def test_a_learner_who_retreated_can_climb_back(config):
@@ -424,8 +464,11 @@ def test_a_learner_who_retreated_can_climb_back(config):
     assert retreated.length == 4
     assert (retreated.length, retreated.boundary) not in DIFFICULTY_LADDER
 
+    # 한 단을 올라가려면 유지 시간을 바닥까지 내린 뒤 한 번 더 맞혀야 한다.
+    # 필요한 정답 수는 설정이 정한다 — 하한이 낮을수록 길어진다.
+    needed = len(hold_chain(config))
     difficulty = retreated
-    for _ in range(6):
+    for _ in range(needed):
         difficulty = rule.on_correct(difficulty, config)
     assert difficulty.length >= 5, "사다리 밖에서도 다시 올라온다"
 

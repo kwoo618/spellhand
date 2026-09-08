@@ -55,7 +55,8 @@ R5. 추측으로 빈칸을 채우지 않는다. TBD는 TBD로 남긴다. 규칙�
 
 `docs/` 아래에 있다. 작업 전 관련 절을 직접 읽는다.
 
-- `docs/개발_PRD_v2.md` — 구현 사양. 절 번호로 참조한다
+- `docs/개발_PRD_v2.1.md` — 구현 사양. 절 번호로 참조한다. **이쪽이 기준이다**
+- `docs/개발_PRD_v2.md` — 구본. 이력용으로만 남겨 둔다
 - `docs/지문자_학습_로봇손_기획서_v3.md` — 왜 이렇게 만드는지. 설계 의도
 - `docs/하드웨어_측정_요청서.md` — 전기팀 회신값의 출처
 
@@ -64,10 +65,8 @@ R5. 추측으로 빈칸을 채우지 않는다. TBD는 TBD로 남긴다. 규칙�
 `DECISIONS.md`를 확인한 뒤, 그래도 불분명하면 멈추고 물어본다.
 
 알려진 불일치:
-- PRD 4.1의 poses.json 전문에는 `calibration.servo_range_deg` 가 없다.
-  실제 파일에는 있다. 코드가 맞다 (DECISIONS.md §2)
-- PRD 2장은 Python 3.11+ 라고 적혀 있으나 실제 환경은 3.12
-- PRD 16장은 v1→v2 마이그레이션을 전제로 쓰였다. 실제로는 신규 개발이다
+- 없음. v2.1이 구본 v2의 불일치 3건(`servo_range_deg` 누락, Python 버전,
+  마이그레이션 전제)을 모두 해소했다. 새로 어긋나는 것을 발견하면 여기 적는다
 
 ## 현재 상태
 
@@ -75,6 +74,7 @@ R5. 추측으로 빈칸을 채우지 않는다. TBD는 TBD로 남긴다. 규칙�
   1차 완료 기준은 Mock에서 판별 8 + 단어 4 세션이 끝까지 돌고 요약이 트랙별로 나오는 것
 - 완료: config 계층 (poses.json schema v2 + 검증 34테스트), words.json + 필터 (24테스트)
 - 진행 중: server/calibration.py (flex → 각도 변환)
-- 막힌 것: 유지 시간 2000ms 하한의 성격(정착 시간 vs 부하 한계) 미회신 → `observe_from=arrival`로 진행
+- 막힌 것: 없음. TBD-2(유지 시간 하한) 확정 — 하한 자체가 불필요해 800ms로 인하.
+  `observe_from`은 `arrival` 유지 (DECISIONS.md §7)
 - 미해결: 제3자 판별 파일럿 미실시. 11자 세트는 아직 지각적으로 검증되지 않음
 - 다음: DeviceAdapter + MockDevice → DB 스키마 → judge → items → safety → session → REST/WS

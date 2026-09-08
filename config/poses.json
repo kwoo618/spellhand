@@ -30,14 +30,14 @@
   "timing": {
     "transition_ms": 900,
     "transition_slow_ms": 1800,
-    "hold_min_ms": 2000,
+    "hold_min_ms": 800,
     "hold_max_ms": 3000,
     "hold_default_ms": 3000,
     "interpolation_tick_ms": 20,
     "observe_from": "arrival",
     "settle_ms": 0,
     "idle_timeout_ms": 30000,
-    "_note": "transition/hold는 실측. hold_min의 성격(정착/부하)은 미확인. 정착 시간으로 확정되면 observe_from을 settled로 바꾸고 settle_ms를 채운 뒤 hold_min을 내린다"
+    "_note": "transition/hold는 실측. hold_min 2000의 성격은 2026-09-08 확인 결과 정착 시간도 부하 한계도 아니었다 — 하한 자체가 불필요했고 800ms까지 안정 동작을 확인해 하한을 내렸다. 정착 시간 가설이 기각되었으므로 observe_from은 arrival, settle_ms는 0을 유지한다"
   },
 
   "poses": {
