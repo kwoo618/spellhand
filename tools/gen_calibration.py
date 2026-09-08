@@ -21,17 +21,19 @@ python tools/gen_calibration.py --check    # 최신인지 확인 (생성하지 �
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, Mapping
+from typing import Mapping
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from server.config import (  # noqa: E402  - sys.path 를 먼저 세워야 한다
+from server.calibration import (  # noqa: E402  - sys.path 를 먼저 세워야 한다
+    calibration_hash,
+    canonical_payload,
+)
+from server.config import (  # noqa: E402
     DEFAULT_CONFIG_PATH,
     Config,
     load_config,
@@ -41,55 +43,9 @@ DEFAULT_HEADER_PATH = (
     REPO_ROOT / "firmware" / "hand_controller" / "calibration.h"
 )
 
-HASH_LENGTH = 8
-
-
-def canonical_payload(config: Config) -> Dict[str, Any]:
-    """해시 대상. **헤더에 실제로 들어가는 값과 정확히 같아야 한다.**
-
-    이 규칙 덕분에 "해시가 다르다" 와 "헤더 내용이 다르다" 가 같은 말이 된다.
-    헤더에 새 값을 내보내면 여기에도 넣어야 하고, 그러지 않으면 그 값을 바꿔도
-    해시가 그대로라 재업로드가 필요하다는 신호가 뜨지 않는다.
-    """
-    fingers = list(config.fingers)
-    return {
-        "device_id": config.device_id,
-        "fingers": fingers,
-        "servo_range_deg": {
-            "min": config.servo_range.min,
-            "max": config.servo_range.max,
-        },
-        "calibration": {
-            finger: {
-                "open": config.calibration[finger].open,
-                "closed": config.calibration[finger].closed,
-            }
-            for finger in fingers
-        },
-        # 핀은 해시 대상이다. 배선이 바뀌면 펌웨어를 다시 올려야 한다
-        # (DECISIONS.md §30).
-        "pins": {finger: config.pins[finger] for finger in fingers},
-        "neutral": {finger: config.neutral[finger] for finger in fingers},
-        "safe": {finger: config.safe[finger] for finger in fingers},
-        "timing": {
-            "interpolation_tick_ms": config.timing.interpolation_tick_ms,
-            "idle_timeout_ms": config.timing.idle_timeout_ms,
-            "transition_ms": config.timing.transition_ms,
-            "max_transition_ms": config.timing.transition_slow_ms,
-            "max_hold_ms": config.timing.hold_max_ms,
-        },
-    }
-
-
-def calibration_hash(config: Config) -> str:
-    """해시 앞 `HASH_LENGTH` 자리. 서버와 생성기가 같은 방식으로 계산한다."""
-    blob = json.dumps(
-        canonical_payload(config),
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=True,
-    )
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:HASH_LENGTH]
+# 해시 정의는 server/calibration.py 에 있다. 서버가 시리얼 접속 직후 같은 값을
+# 계산해 펌웨어와 대조하므로, 정의가 두 벌이면 안 된다.
+__all__ = ["canonical_payload", "calibration_hash", "render_header", "main"]
 
 
 def _int_array(name: str, values: Mapping[str, int], fingers) -> str:

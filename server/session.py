@@ -780,10 +780,18 @@ class SessionController:
             # 글자별 도달 알림. 어느 글자인지는 보내지 않는다 — 위치만이다.
             self._emit("ready", index=self._seq, letter_pos=index)
 
-        # 관찰 시간의 기준점은 마지막 글자의 **도달** 시점이다. 동기 어댑터는
-        # 유지까지 끝난 뒤에 돌아오므로 유지 시간만큼 되돌려 잡는다
-        # (DECISIONS.md §24).
-        ready_at = self._clock() - timedelta(milliseconds=spec.hold_ms)
+        # 관찰 시간의 기준점은 마지막 글자의 **도달** 시점이다.
+        #
+        # 도달 시점을 실제로 아는 어댑터는 그 값을 그대로 쓴다 — 시리얼은
+        # 펌웨어가 RDY 를 보내므로 추정할 필요가 없다. 모르는 어댑터(Mock)는
+        # 유지까지 끝난 뒤에 돌아오므로 유지 시간만큼 되돌려 역산한다
+        # (DECISIONS.md §24, §36).
+        arrived_at = self._device.last_arrival_at()
+        ready_at = (
+            arrived_at
+            if arrived_at is not None
+            else self._clock() - timedelta(milliseconds=spec.hold_ms)
+        )
         return presented_at, ready_at
 
     def _demo_pair(

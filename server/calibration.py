@@ -13,8 +13,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
-from typing import Dict, Mapping, Tuple
+from typing import Any, Dict, Mapping, Tuple
 
 from server.config import FLEX_MAX, FLEX_MIN, Config
 
@@ -23,7 +25,13 @@ __all__ = [
     "angle_to_flex",
     "pose_to_angles",
     "angles_to_pose",
+    "canonical_payload",
+    "calibration_hash",
+    "HASH_LENGTH",
 ]
+
+# CAL_HASH 앞자리 수. 펌웨어 헤더와 서버가 같은 길이를 써야 대조가 성립한다.
+HASH_LENGTH = 8
 
 logger = logging.getLogger(__name__)
 
@@ -188,3 +196,58 @@ def angles_to_pose(config: Config, angles: Mapping[str, float]) -> Dict[str, flo
         finger: angle_to_flex(config, finger, angles[finger])
         for finger in config.fingers
     }
+
+
+# --------------------------------------------------------------------------- #
+# 캘리브레이션 해시 (PRD 5.1)
+# --------------------------------------------------------------------------- #
+#
+# 서버와 헤더 생성기가 **같은 정의**를 써야 대조가 성립한다. 그래서 정의는
+# 여기 한 곳에 있고 `tools/gen_calibration.py` 가 가져다 쓴다. 두 벌로 두면
+# 언젠가 한쪽만 고쳐서, 실제로는 다른데 해시는 같은 상태가 만들어진다.
+
+
+def canonical_payload(config: Config) -> Dict[str, Any]:
+    """해시 대상. **헤더에 실제로 들어가는 값과 정확히 같아야 한다.**
+
+    이 규칙 덕분에 "해시가 다르다" 와 "헤더 내용이 다르다" 가 같은 말이 된다.
+    헤더에 새 값을 내보내면 여기에도 넣어야 하고, 그러지 않으면 그 값을 바꿔도
+    재업로드가 필요하다는 신호가 뜨지 않는다 (DECISIONS.md §30).
+    """
+    fingers = list(config.fingers)
+    return {
+        "device_id": config.device_id,
+        "fingers": fingers,
+        "servo_range_deg": {
+            "min": config.servo_range.min,
+            "max": config.servo_range.max,
+        },
+        "calibration": {
+            finger: {
+                "open": config.calibration[finger].open,
+                "closed": config.calibration[finger].closed,
+            }
+            for finger in fingers
+        },
+        "pins": {finger: config.pins[finger] for finger in fingers},
+        "neutral": {finger: config.neutral[finger] for finger in fingers},
+        "safe": {finger: config.safe[finger] for finger in fingers},
+        "timing": {
+            "interpolation_tick_ms": config.timing.interpolation_tick_ms,
+            "idle_timeout_ms": config.timing.idle_timeout_ms,
+            "transition_ms": config.timing.transition_ms,
+            "max_transition_ms": config.timing.transition_slow_ms,
+            "max_hold_ms": config.timing.hold_max_ms,
+        },
+    }
+
+
+def calibration_hash(config: Config) -> str:
+    """`CAL_HASH` 값. 펌웨어 헤더에 박히는 것과 같은 문자열이다."""
+    blob = json.dumps(
+        canonical_payload(config),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:HASH_LENGTH]

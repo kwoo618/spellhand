@@ -39,8 +39,12 @@ from server.config import (
     load_words,
 )
 from server.db import Database, utcnow
-from server.device import DeviceAdapter
-from server.device.mock import MockDevice
+from server.device import (
+    DEVICE_MODE_MOCK,
+    DEVICE_MODES,
+    DeviceAdapter,
+    create_device,
+)
 from server.routes.api import router as api_router
 from server.routes.events import EventHub
 from server.safety import SafetyError, SafetyGate, SessionLock
@@ -52,9 +56,6 @@ logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 WEB_ROOT = REPO_ROOT / "web"
-
-DEVICE_MODE_MOCK = "mock"
-DEVICE_MODE_SERIAL = "serial"
 
 
 @dataclass
@@ -144,19 +145,14 @@ def build_station(
     config = load_config(config_path)
     words = load_words(words_path, letters=config.poses)
 
-    mode = (device_mode or os.environ.get("DEVICE_MODE") or DEVICE_MODE_MOCK).lower()
+    # 어댑터 선택은 server.device 한 곳에만 있다. 여기서 다시 판단하지 않는다.
+    mode = (
+        device_mode or os.environ.get("DEVICE_MODE") or DEVICE_MODE_MOCK
+    ).strip().lower()
+    if mode not in DEVICE_MODES:
+        mode = DEVICE_MODE_MOCK
     if device is None:
-        if mode == DEVICE_MODE_SERIAL:
-            raise NotImplementedError(
-                "DEVICE_MODE=serial is not implemented yet; the serial adapter "
-                "is Phase 2. Run with DEVICE_MODE=mock."
-            )
-        if mode != DEVICE_MODE_MOCK:
-            raise ValueError(
-                f"DEVICE_MODE is {mode!r}, expected "
-                f"{DEVICE_MODE_MOCK!r} or {DEVICE_MODE_SERIAL!r}"
-            )
-        device = MockDevice(config)
+        device = create_device(config, mode=mode)
 
     db = database or Database()
     db.create_all()
