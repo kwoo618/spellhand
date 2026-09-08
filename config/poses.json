@@ -15,6 +15,18 @@
     }
   },
 
+  "pins": {
+    "board_pin_range": { "min": 0, "max": 53 },
+    "fingers": {
+      "thumb":  2,
+      "index":  3,
+      "middle": 6,
+      "ring":   8,
+      "pinky":  10
+    },
+    "_note": "전기팀 기존 코드에서 확인한 배선. 펌웨어에 리터럴로 박지 않고 calibration.h 로 생성해 내보낸다. 핀이 바뀌면 펌웨어를 다시 올려야 하므로 CAL_HASH 대상에 포함된다"
+  },
+
   "timing": {
     "transition_ms": 900,
     "transition_slow_ms": 1800,

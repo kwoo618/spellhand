@@ -20,6 +20,7 @@ __all__ = [
     "ConfigError",
     "Config",
     "ServoRange",
+    "BoardPinRange",
     "FingerCalibration",
     "Timing",
     "Validation",
@@ -142,6 +143,14 @@ class ServoRange:
 
 
 @dataclass(frozen=True)
+class BoardPinRange:
+    """보드가 제공하는 디지털 핀 번호 범위. 보드를 바꾸면 이 값도 바뀐다."""
+
+    min: int
+    max: int
+
+
+@dataclass(frozen=True)
 class FingerCalibration:
     """한 손가락의 서보 각도 양 끝점. flex 0.0 -> open, flex 1.0 -> closed."""
 
@@ -186,6 +195,8 @@ class Config:
     fingers: Tuple[str, ...]
     servo_range: ServoRange
     calibration: Mapping[str, FingerCalibration]
+    board_pin_range: BoardPinRange
+    pins: Mapping[str, int]
     timing: Timing
     poses: Mapping[str, Pose]
     neutral: Pose
@@ -309,6 +320,61 @@ def _parse_calibration(
             )
         out[finger] = FingerCalibration(open=angles["open"], closed=angles["closed"])
     return servo_range, out
+
+
+def _parse_pins(
+    raw: Mapping[str, Any], fingers: Tuple[str, ...]
+) -> Tuple[BoardPinRange, Dict[str, int]]:
+    """손가락별 서보 핀 번호.
+
+    핀도 하드웨어 종속값이므로 여기서만 온다. 펌웨어는 `calibration.h` 로
+    생성해 받는다 — 소스에 리터럴로 박지 않는다 (DECISIONS.md §29).
+    """
+    node = _require_mapping(_require_key(raw, "pins", "$"), "$.pins")
+
+    range_path = "$.pins.board_pin_range"
+    range_node = _require_mapping(
+        _require_key(node, "board_pin_range", "$.pins"), range_path
+    )
+    low = _require_int(_require_key(range_node, "min", range_path), f"{range_path}.min")
+    high = _require_int(_require_key(range_node, "max", range_path), f"{range_path}.max")
+    if low >= high:
+        raise _fail(
+            f"{range_path}.min", low, f"a value strictly below {range_path}.max ({high})"
+        )
+    board_range = BoardPinRange(min=low, max=high)
+
+    per_finger = _require_mapping(
+        _require_key(node, "fingers", "$.pins"), "$.pins.fingers"
+    )
+    expected = set(fingers)
+    actual = set(per_finger.keys())
+    if actual != expected:
+        raise ConfigError(
+            f"$.pins.fingers: keys {sorted(actual)}, "
+            f"expected exactly the fingers listed in $.fingers {sorted(expected)}"
+        )
+
+    pins: Dict[str, int] = {}
+    seen: Dict[int, str] = {}
+    for finger in fingers:
+        pin = _require_int(
+            per_finger[finger],
+            f"$.pins.fingers.{finger}",
+            minimum=board_range.min,
+            maximum=board_range.max,
+        )
+        if pin in seen:
+            # 두 서보가 같은 핀에 물리면 둘이 같이 움직인다. 배선 오기입이다.
+            raise _fail(
+                f"$.pins.fingers.{finger}",
+                pin,
+                f"a pin not already used by {seen[pin]!r}",
+            )
+        seen[pin] = finger
+        pins[finger] = pin
+
+    return board_range, pins
 
 
 def _parse_timing(raw: Mapping[str, Any]) -> Timing:
@@ -521,6 +587,7 @@ def load_config(path: "str | Path" = DEFAULT_CONFIG_PATH) -> Config:
 
     fingers = _parse_fingers(root)
     servo_range, calibration = _parse_calibration(root, fingers)
+    board_pin_range, pins = _parse_pins(root, fingers)
     timing = _parse_timing(root)
     validation = _parse_validation(root)
 
@@ -545,6 +612,8 @@ def load_config(path: "str | Path" = DEFAULT_CONFIG_PATH) -> Config:
         fingers=fingers,
         servo_range=servo_range,
         calibration=calibration,
+        board_pin_range=board_pin_range,
+        pins=pins,
         timing=timing,
         poses=poses,
         neutral=neutral,

@@ -382,3 +382,87 @@ def test_a_narrower_servo_range_rejects_the_real_angles(broken):
 def test_missing_file_raises_config_error(tmp_path):
     with pytest.raises(ConfigError):
         load_config(tmp_path / "nope.json")
+
+
+# --------------------------------------------------------------------------- #
+# 핀 배치 (하드웨어 종속값)
+# --------------------------------------------------------------------------- #
+
+def test_pins_cover_every_finger(config):
+    assert set(config.pins) == set(config.fingers)
+    assert [config.pins[f] for f in config.fingers] == [2, 3, 6, 8, 10]
+
+
+def test_board_pin_range_comes_from_the_config_file(config):
+    """보드도 교체 대상이다. 핀 범위를 코드 상수로 두지 않는다 (DECISIONS.md §29)."""
+    assert config.board_pin_range.min < config.board_pin_range.max
+    for finger, pin in config.pins.items():
+        assert config.board_pin_range.min <= pin <= config.board_pin_range.max, finger
+
+
+def test_duplicate_pins_are_rejected(broken):
+    """두 서보가 같은 핀에 물리면 둘이 같이 움직인다. 배선 오기입이다."""
+    def mutate(data):
+        data["pins"]["fingers"]["ring"] = data["pins"]["fingers"]["middle"]
+
+    with pytest.raises(ConfigError) as exc:
+        load_config(broken(mutate))
+    assert "$.pins.fingers.ring" in str(exc.value)
+    assert "middle" in str(exc.value)
+
+
+def test_a_pin_above_the_board_range_is_rejected(broken):
+    def mutate(data):
+        top = data["pins"]["board_pin_range"]["max"]
+        data["pins"]["fingers"]["thumb"] = top + 1
+
+    with pytest.raises(ConfigError) as exc:
+        load_config(broken(mutate))
+    assert "$.pins.fingers.thumb" in str(exc.value)
+
+
+def test_a_negative_pin_is_rejected(broken):
+    def mutate(data):
+        data["pins"]["fingers"]["pinky"] = -1
+
+    with pytest.raises(ConfigError) as exc:
+        load_config(broken(mutate))
+    assert "$.pins.fingers.pinky" in str(exc.value)
+
+
+def test_pin_key_mismatch_is_rejected(broken):
+    def mutate(data):
+        fingers = data["pins"]["fingers"]
+        fingers["pinkie"] = fingers.pop("pinky")
+
+    with pytest.raises(ConfigError) as exc:
+        load_config(broken(mutate))
+    assert "$.pins.fingers" in str(exc.value)
+
+
+def test_a_missing_pin_is_rejected(broken):
+    def mutate(data):
+        del data["pins"]["fingers"]["index"]
+
+    with pytest.raises(ConfigError) as exc:
+        load_config(broken(mutate))
+    assert "$.pins.fingers" in str(exc.value)
+
+
+def test_a_missing_pins_block_is_rejected(broken):
+    def mutate(data):
+        del data["pins"]
+
+    with pytest.raises(ConfigError) as exc:
+        load_config(broken(mutate))
+    assert "pins" in str(exc.value)
+
+
+def test_an_inverted_board_pin_range_is_rejected(broken):
+    def mutate(data):
+        rng = data["pins"]["board_pin_range"]
+        rng["min"], rng["max"] = rng["max"], rng["min"]
+
+    with pytest.raises(ConfigError) as exc:
+        load_config(broken(mutate))
+    assert "$.pins.board_pin_range.min" in str(exc.value)
