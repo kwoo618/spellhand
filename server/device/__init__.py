@@ -37,6 +37,7 @@ __all__ = [
     "DEVICE_MODE_MOCK",
     "DEVICE_MODE_SERIAL",
     "DEVICE_MODES",
+    "resolve_device_mode",
     "create_device",
 ]
 
@@ -260,6 +261,27 @@ DEVICE_MODE_SERIAL = "serial"
 DEVICE_MODES = (DEVICE_MODE_MOCK, DEVICE_MODE_SERIAL)
 
 
+def resolve_device_mode(mode: Optional[str] = None) -> str:
+    """어떤 어댑터로 뜰지 정한다. **이 판단은 여기 한 곳에만 있다.**
+
+    두 곳에서 정하면 한쪽이 조용히 mock 으로 떨어뜨리고 다른 쪽의 경고가
+    묻힌다. 그러면 오타 하나로 실기 대신 Mock 이 뜬 것을 아무도 모른다
+    (DECISIONS.md §43).
+    """
+    resolved = (
+        mode or os.environ.get("DEVICE_MODE") or DEVICE_MODE_MOCK
+    ).strip().lower()
+    if resolved not in DEVICE_MODES:
+        logger.warning(
+            "DEVICE_MODE is %r, expected one of %s; falling back to %r",
+            resolved,
+            list(DEVICE_MODES),
+            DEVICE_MODE_MOCK,
+        )
+        return DEVICE_MODE_MOCK
+    return resolved
+
+
 def create_device(
     config: Config,
     *,
@@ -278,17 +300,10 @@ def create_device(
     """
     from server.device.mock import MockDevice
 
-    resolved = (mode or os.environ.get("DEVICE_MODE") or DEVICE_MODE_MOCK).strip().lower()
-    if resolved not in DEVICE_MODES:
-        logger.warning(
-            "DEVICE_MODE is %r, expected one of %s; falling back to %r",
-            resolved,
-            list(DEVICE_MODES),
-            DEVICE_MODE_MOCK,
-        )
-        resolved = DEVICE_MODE_MOCK
+    resolved = resolve_device_mode(mode)
 
     if resolved == DEVICE_MODE_MOCK:
+        logger.info("device adapter: mock")
         return MockDevice(config)
 
     # 지연 import: pyserial 이 없는 환경에서도 mock 은 떠야 한다.
@@ -298,8 +313,12 @@ def create_device(
     if not resolved_port.strip():
         raise DeviceConfigError(
             "DEVICE_MODE=serial requires a serial port, but SERIAL_PORT is empty. "
-            "Set SERIAL_PORT (for example COM3) or run with DEVICE_MODE=mock."
+            "Set SERIAL_PORT (for example COM3) in .env or the environment, "
+            "or run with DEVICE_MODE=mock."
         )
 
     resolved_baud = baud or int(os.environ.get("SERIAL_BAUD") or DEFAULT_BAUD)
+    logger.info(
+        "device adapter: serial on %s @ %d baud", resolved_port.strip(), resolved_baud
+    )
     return SerialDevice(config, port=resolved_port.strip(), baud=resolved_baud)

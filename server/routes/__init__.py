@@ -41,10 +41,11 @@ from server.config import (
 from server.db import Database, utcnow
 from server.device import (
     DEVICE_MODE_MOCK,
-    DEVICE_MODES,
     DeviceAdapter,
     create_device,
+    resolve_device_mode,
 )
+from server.env import load_env
 from server.routes.api import router as api_router
 from server.routes.events import EventHub
 from server.safety import SafetyError, SafetyGate, SessionLock
@@ -151,12 +152,9 @@ def build_station(
     config = load_config(config_path)
     words = load_words(words_path, letters=config.poses)
 
-    # 어댑터 선택은 server.device 한 곳에만 있다. 여기서 다시 판단하지 않는다.
-    mode = (
-        device_mode or os.environ.get("DEVICE_MODE") or DEVICE_MODE_MOCK
-    ).strip().lower()
-    if mode not in DEVICE_MODES:
-        mode = DEVICE_MODE_MOCK
+    # 어댑터 선택은 server.device 한 곳에만 있다. 여기서 다시 판단하지 않는다 —
+    # 여기서 또 정규화하면 그쪽 경고가 묻힌다 (DECISIONS.md §43).
+    mode = resolve_device_mode(device_mode)
     if device is None:
         device = create_device(config, mode=mode)
 
@@ -317,5 +315,21 @@ def __getattr__(name: str) -> object:
         raise AttributeError(name)
     global _app
     if _app is None:
+        # 서버를 띄우는 경로는 여기 하나다. `.env` 도 여기서만 읽는다 —
+        # 테스트는 이 경로를 지나지 않으므로 개발자 기계의 .env 가 새지 않는다.
+        _configure_logging()
+        load_env()
         _app = create_app()
     return _app
+
+
+def _configure_logging() -> None:
+    """기동 로그가 보이도록 한다.
+
+    실기인지 Mock 인지가 로그에 남지 않으면, 손이 안 움직일 때 원인을 찾는 데
+    시간이 든다. 이미 핸들러가 있으면 basicConfig 는 아무것도 하지 않는다.
+    """
+    logging.basicConfig(
+        level=logging.INFO, format="%(levelname)s %(name)s: %(message)s"
+    )
+    logging.getLogger("server").setLevel(logging.INFO)

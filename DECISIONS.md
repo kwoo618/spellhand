@@ -1292,3 +1292,65 @@ DeviceProtocolError: expected RDY for 'P 1788930812 ...' but the firmware said '
 - 취소를 나타내는 예외 타입을 두고 `Z` 이후의 `-1` 응답을 그것으로 올린다
 - 취소 시 응답 찌꺼기를 정리하는 주체를 정한다
 - `MockDevice` 의 취소된 이동도 같은 예외를 던지게 한다
+
+
+---
+
+## 43. `.env` 는 서버 진입점에서만 읽고, 모드 결정은 한 곳에서만 한다
+
+**고친 문제 둘.**
+
+**(1) `.env` 를 아무도 읽지 않았다.** `uvicorn server.routes:app` 으로 띄우면
+`DEVICE_MODE=serial` 을 `.env` 에 적어 두어도 **Mock 으로 떴다.** 코드 어디에도
+`load_dotenv` 가 없었다. 실기 세션을 브라우저에서 돌릴 수 없었고, 실기 검증
+중에야 발견됐다.
+
+**(2) 모드를 두 곳에서 정했다.** `build_station()` 과 `create_device()` 가 각각
+`DEVICE_MODE` 를 읽었다. 그런데 `build_station` 이 먼저 정규화하면서 알 수 없는
+값을 **조용히** `mock` 으로 떨어뜨렸고, `create_device` 의 경고는 그 값을 볼
+일이 없어 묻혔다. `DEVICE_MODE=seriel` 같은 오타 하나면 아무 말 없이 Mock 이
+뜬다 — 손이 안 움직이는 이유를 하드웨어에서 찾게 된다.
+
+이제 `resolve_device_mode()` 하나가 정하고 경고도 거기서 나온다.
+
+### `.env` 를 진입점에서만 읽는 이유
+
+`load_env()` 는 `server/routes/__init__.py` 의 `__getattr__("app")` — 즉
+uvicorn 이 앱을 집어 가는 자리 — 에서만 부른다. `build_station()` 안에서
+부르지 않는다.
+
+**테스트가 그 경로를 지나기 때문이다.** 여러 테스트가 `build_station()` 을
+직접 부르는데, 거기서 `.env` 를 읽으면 **개발자 기계의 `DEVICE_MODE=serial` 이
+테스트로 새어 들어간다.** 그러면 테스트가 실기 포트를 잡으려 들고, mockhand
+엔드포인트 테스트처럼 `device_mode == mock` 을 전제하는 것들이 사람 기계에서만
+깨진다. `test_env_loading_happens_only_at_the_server_entry_point` 가 호출 위치를
+고정한다.
+
+### 명시적 환경변수가 파일보다 우선한다
+
+`os.environ` 에 이미 있는 키는 건너뛴다. 셸에서 `DEVICE_MODE=mock` 을 주고
+띄웠는데 파일이 그것을 `serial` 로 덮으면, **사람이 지정한 것과 다른 것이
+뜬다.** 파일은 기본값이고 셸은 그날의 결정이다.
+
+### 로그에 값을 남기지 않는다
+
+`.env` 에는 `ANTHROPIC_API_KEY` 가 들어 있다. 로딩 보고(`EnvLoad`)는 **키 이름만**
+담고 값은 담지 않는다. `test_the_load_report_carries_no_values` 가 고정한다.
+
+### 기동 로그
+
+어느 어댑터로 떴는지 `INFO` 로 남긴다. 진입점에서 `logging.basicConfig` 를
+한 번 부르는데, 라이브러리 코드가 아니라 애플리케이션 진입점이라 적절하다.
+이미 핸들러가 있으면 아무것도 하지 않는다.
+
+```
+INFO server.env: loaded ...\.env: applied ['SERIAL_PORT'], kept existing ['DEVICE_MODE']
+INFO server.device: device adapter: serial on COM3 @ 115200 baud
+```
+
+**"실기인지 Mock 인지 헷갈리는 상태"로 돌아가지 않는 것이 목적이다.** 이번
+실기 검증에서 그 상태가 실제로 시간을 잡아먹었다.
+
+**`pydantic-settings` 는 쓰지 않았다.** 기획서의 "의도적으로 쓰지 않는 것"
+목록에 있다. 필요한 것은 "파일을 읽어 없는 키만 채운다" 한 가지이고,
+`dotenv_values()` 로 파싱만 빌려 왔다.

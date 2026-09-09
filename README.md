@@ -54,6 +54,56 @@ pytest tests/test_config.py -v
 .\.venv\Scripts\python.exe -c "from server.config import load_config; c = load_config('config/poses.json'); print(sorted(c.poses))"
 ```
 
+### 서버
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn server.routes:app --port 8000
+```
+
+- 학습자 화면 <http://127.0.0.1:8000/practice.html>
+- Mock 손 보기 <http://127.0.0.1:8000/mockhand.html> (Mock 모드 전용)
+
+**기동 로그에 어느 어댑터로 떴는지 남는다.** 실기인지 Mock 인지는 이 줄로
+확인한다.
+
+```
+INFO server.env: loaded ...\.env: applied ['SERIAL_PORT'], kept existing ['DEVICE_MODE']
+INFO server.device: device adapter: serial on COM3 @ 115200 baud
+```
+
+### 환경변수와 `.env`
+
+기동 시 저장소 루트의 `.env` 를 읽는다. 파일이 없으면 기본값(`mock`)으로 뜬다.
+`.env` 는 커밋하지 않는다 (`.gitignore`).
+
+| 변수 | 값 | 기본 |
+|---|---|---|
+| `DEVICE_MODE` | `mock` \| `serial` | `mock` |
+| `SERIAL_PORT` | `COM3` 등. `serial` 일 때 **필수** | 없음 |
+| `SERIAL_BAUD` | 보드 통신 속도 | `115200` |
+
+**셸에서 준 값이 `.env` 보다 우선한다.** 파일을 고치지 않고 한 번만 다르게
+띄울 때 쓴다.
+
+```powershell
+$env:DEVICE_MODE="mock"
+.\.venv\Scripts\python.exe -m uvicorn server.routes:app --port 8000
+```
+
+`DEVICE_MODE` 를 알아볼 수 없으면 경고를 남기고 `mock` 으로 뜬다. 오타로
+Mock 이 뜬 것을 손 고장으로 오해하지 않도록 로그를 확인할 것.
+
+### 실기(`serial`)로 띄울 때
+
+**전기팀 입회 없이 실기를 구동하지 않는다** (CLAUDE.md 승인 항목).
+
+- 기동 시 포트를 열고 `CAL_HASH` 를 대조한다. 불일치면 **서버가 뜨지 않는다** —
+  `python tools/gen_calibration.py` 후 펌웨어를 다시 올린다
+- **`--reload` 를 쓰지 않는다.** 파일이 바뀔 때마다 새 프로세스가 같은 포트를
+  열려다 실패한다
+- 포트가 다른 프로그램(아두이노 IDE 시리얼 모니터 등)에 잡혀 있으면 기동에
+  실패한다
+
 ## 자세 테이블
 
 11자(B D E F I L O S V W Y)의 자세, 손가락별 서보 각도, 타이밍, 혼동쌍은

@@ -7,6 +7,8 @@
 운용과 같은 조건에서 걸리게 한다.
 """
 
+import os
+
 import pytest
 
 from server.calibration import calibration_hash
@@ -606,3 +608,148 @@ def test_stop_is_refused_only_when_disconnected(config, clock, port):
     with pytest.raises(DeviceNotConnectedError):
         device.stop()
     assert port.drive_commands == []
+
+
+# --------------------------------------------------------------------------- #
+# .env 로딩과 모드 결정
+# --------------------------------------------------------------------------- #
+
+def write_env(tmp_path, **values):
+    """임시 .env 를 만든다. 실제 .env 는 건드리지 않는다."""
+    path = tmp_path / ".env"
+    path.write_text(
+        "".join(f"{k}={v}{chr(10)}" for k, v in values.items()), encoding="utf-8"
+    )
+    return path
+
+
+@pytest.fixture
+def clean_env():
+    """관련 환경변수를 비우고, 끝나면 원래대로 되돌린다.
+
+    `load_env` 는 `os.environ` 을 직접 고치므로 monkeypatch 가 되돌리지
+    못한다. 되돌리지 않으면 이 테스트가 다른 테스트에 값을 흘린다.
+    """
+    keys = ("DEVICE_MODE", "SERIAL_PORT", "SERIAL_BAUD", "ANTHROPIC_API_KEY")
+    saved = {k: os.environ.get(k) for k in keys}
+    for k in keys:
+        os.environ.pop(k, None)
+    yield
+    for k, v in saved.items():
+        os.environ.pop(k, None)
+        if v is not None:
+            os.environ[k] = v
+
+
+def test_env_file_is_loaded(tmp_path, clean_env):
+    from server.env import load_env
+
+    path = write_env(tmp_path, DEVICE_MODE="serial", SERIAL_PORT="COM9")
+    result = load_env(path)
+
+    assert os.environ["DEVICE_MODE"] == "serial"
+    assert os.environ["SERIAL_PORT"] == "COM9"
+    assert set(result.applied) == {"DEVICE_MODE", "SERIAL_PORT"}
+    assert result.found is True
+
+
+def test_an_explicit_variable_wins_over_the_file(tmp_path, clean_env):
+    """셸에서 준 값이 파일보다 우선한다. 아니면 지정한 것과 다른 것이 뜬다."""
+    from server.env import load_env
+
+    os.environ["DEVICE_MODE"] = "mock"
+    path = write_env(tmp_path, DEVICE_MODE="serial", SERIAL_PORT="COM9")
+
+    result = load_env(path)
+
+    assert os.environ["DEVICE_MODE"] == "mock", "파일이 명시적 설정을 덮었다"
+    assert "DEVICE_MODE" in result.skipped
+    assert "SERIAL_PORT" in result.applied
+
+
+def test_a_missing_env_file_is_not_an_error(tmp_path, clean_env):
+    from server.env import load_env
+
+    result = load_env(tmp_path / "nope.env")
+    assert result.found is False
+    assert result.applied == () and result.skipped == ()
+    assert "DEVICE_MODE" not in os.environ
+
+
+def test_the_load_report_carries_no_values(tmp_path, clean_env):
+    """.env 에는 API 키가 들어 있다. 보고에는 이름만 남긴다."""
+    import dataclasses
+
+    from server.env import load_env
+
+    path = write_env(tmp_path, ANTHROPIC_API_KEY="sk-secret-value")
+    result = load_env(path)
+
+    dumped = repr(dataclasses.asdict(result))
+    assert "ANTHROPIC_API_KEY" in dumped
+    assert "sk-secret-value" not in dumped
+
+
+def test_env_loading_happens_only_at_the_server_entry_point():
+    """테스트가 지나는 경로에서는 .env 를 읽지 않는다.
+
+    개발자 기계의 .env 가 새면 DEVICE_MODE=serial 로 테스트가 실기를 잡는다.
+    """
+    import pathlib as _p
+
+    routes = _p.Path("server/routes/__init__.py").read_text(encoding="utf-8")
+    assert routes.count("load_env()") == 1
+    entry = routes[routes.index("def __getattr__"):]
+    assert "load_env()" in entry, "진입점 밖에서 부르고 있다"
+
+
+def test_the_mode_decision_lives_in_one_place():
+    """두 곳에서 정하면 한쪽의 경고가 묻힌다 (DECISIONS §43)."""
+    import pathlib as _p
+
+    routes = _p.Path("server/routes/__init__.py").read_text(encoding="utf-8")
+    assert "resolve_device_mode(" in routes
+    assert 'os.environ.get("DEVICE_MODE")' not in routes
+
+
+def test_an_unknown_mode_still_warns_through_build_station(config, clock, caplog):
+    """라우트가 조용히 mock 으로 떨어뜨리지 않는다."""
+    import logging
+
+    from server.db import Database
+    from server.routes import build_station
+    from tests.conftest import REAL_POSES, REAL_WORDS
+
+    with caplog.at_level(logging.WARNING, logger="server.device"):
+        station = build_station(
+            config_path=REAL_POSES,
+            words_path=REAL_WORDS,
+            database=Database.in_memory(),
+            device=MockDevice(config, sleep=clock.sleep),
+            device_mode="seriel",
+            clock=clock,
+        )
+
+    assert station.device_mode == "mock"
+    assert any("seriel" in r.getMessage() for r in caplog.records)
+
+
+def test_serial_mode_reports_the_port_at_startup(config, clean_env, caplog):
+    """실기인지 Mock 인지 로그만 보고 알 수 있어야 한다."""
+    import logging
+
+    os.environ["DEVICE_MODE"] = "serial"
+    os.environ["SERIAL_PORT"] = "COM9"
+    with caplog.at_level(logging.INFO, logger="server.device"):
+        create_device(config)
+
+    messages = " ".join(r.getMessage() for r in caplog.records)
+    assert "serial" in messages and "COM9" in messages
+
+
+def test_mock_mode_says_so_at_startup(config, clean_env, caplog):
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="server.device"):
+        create_device(config)
+    assert any("mock" in r.getMessage() for r in caplog.records)
