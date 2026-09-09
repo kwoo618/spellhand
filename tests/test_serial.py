@@ -533,3 +533,76 @@ def test_selection_lives_in_one_place():
     assert "MockDevice(" not in routes
     assert "SerialDevice(" not in routes
     assert "create_device(" in routes
+
+
+# --------------------------------------------------------------------------- #
+# 비상 정지 (R4 — 이 테스트는 완화하지 않는다)
+# --------------------------------------------------------------------------- #
+
+def test_stop_sends_z_while_a_move_is_running(config, clock):
+    """**구동 중에 정지가 실제로 나가야 한다.**
+
+    실기 첫 구동에서 잡힌 결함이다. `stop()` 이 `_run` 을 거치면 busy 검사에
+    걸려 `Z` 를 한 바이트도 쓰지 못했다 — 정지가 필요한 바로 그 순간에
+    정지가 나가지 않았다 (DECISIONS.md §42).
+
+    Mock 은 busy 를 보지 않아 이 결함이 Mock 테스트에 잡히지 않았다.
+    """
+    # P 에 ACK 만 돌려주고 RDY 를 주지 않는다. 그 대기 중에 stop() 을 부른다.
+    port = FakePort(
+        clock, hash_value=calibration_hash(config), script=[["ACK 1001"]]
+    )
+    device = build(config, clock, port)
+    device.connect()
+
+    stopped = []
+    original_readline = port.readline
+
+    def interrupt():
+        if not stopped and device.is_busy:
+            stopped.append(True)
+            device.stop()
+        return original_readline()
+
+    port.readline = interrupt
+
+    with pytest.raises(Exception):
+        # 취소된 이동은 완료로 끝나지 않는다. 어떤 예외인지는 §42 참조.
+        device.move_to(pose_of(config, "B"), 900, 2000)
+
+    assert stopped, "이동 중에 stop() 이 호출되어야 하는 시나리오다"
+    assert "Z" in port.drive_commands, (
+        "구동 중 stop() 이 Z 를 보내지 않았다 — 비상 정지가 막혔다"
+    )
+
+
+def test_stop_does_not_need_the_device_to_be_idle(config, clock):
+    """busy 여도 거부하지 않는다. 거부하면 비상 정지가 아니다."""
+    port = FakePort(clock, hash_value=calibration_hash(config))
+    device = build(config, clock, port)
+    device.connect()
+
+    device._busy = True  # 다른 스레드가 이동 중인 상태를 흉내낸다
+    device.stop()
+
+    assert port.drive_commands == ["Z"]
+
+
+def test_stop_while_idle_clears_its_own_response(config, clock):
+    """정지 응답을 비우지 않으면 다음 명령의 seq 가 어긋난다."""
+    port = FakePort(clock, hash_value=calibration_hash(config))
+    device = build(config, clock, port)
+    device.connect()
+
+    device.stop()
+    device.move_to(pose_of(config, "B"), 900, 2000)  # 남은 줄이 있으면 여기서 깨진다
+
+    assert port.drive_commands[0] == "Z"
+    assert port.drive_commands[1].startswith("P 1001 ")
+
+
+def test_stop_is_refused_only_when_disconnected(config, clock, port):
+    device = build(config, clock, port)
+    with pytest.raises(DeviceNotConnectedError):
+        device.stop()
+    assert port.drive_commands == []

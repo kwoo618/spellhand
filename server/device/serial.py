@@ -229,9 +229,37 @@ class SerialDevice(DeviceAdapter):
         self._sleep(self._config.timing.hold_min_ms / 1000)
 
     def stop(self) -> None:
-        """비상 정지. 즉시 안전 자세로 만들고 기다리지 않는다."""
+        """비상 정지. 진행 중인 명령을 **기다리지 않고** 즉시 `Z` 를 보낸다.
+
+        `_run` 을 거치지 않는다. 거기 있는 busy 검사에 걸리면, 정작 정지가
+        필요한 순간 — 손이 움직이고 있을 때 — 정지가 나가지 않는다
+        (DECISIONS.md §42). 타임아웃 복구가 쓰는 경로와 같다.
+
+        펌웨어의 `Z` 는 상태를 보지 않고 진행 중이던 보간을 버린다. 그래서
+        여기서도 상태를 볼 이유가 없다.
+        """
         self._require_connected()
-        self._run("Z", NO_SEQ, transition_ms=0, hold_ms=0)
+        self._write("Z")
+
+        if self._busy:
+            # 진행 중인 호출자가 이 응답들을 읽는다. 여기서 같이 읽으면
+            # 한 포트를 두 스레드가 읽게 된다.
+            return
+        self._drain_stop_response()
+
+    def _drain_stop_response(self) -> None:
+        """`Z` 의 응답(ACK/RDY/DON)을 비운다.
+
+        비우지 않으면 다음 명령의 `_await` 가 남은 줄을 먼저 읽어 seq 가
+        어긋난다. 응답이 오지 않아도 더 할 일은 없다 — 손은 이미 `Z` 를 받았다.
+        """
+        deadline = self._clock() + timedelta(milliseconds=self._ack_timeout_ms)
+        while True:
+            line = self._read_line(deadline)
+            if line is None:
+                return
+            if _split(line)[0] == "DON":
+                return
 
     # ------------------------------------------------------------------ #
     # 프로토콜
