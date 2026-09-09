@@ -598,3 +598,87 @@ def test_mockhand_hides_the_pose_name_by_default(client):
 def test_practice_does_not_link_to_mockhand(client):
     """제품 기능이 아니다. 학습자 뷰에 노출하지 않는다 (PRD 6.3)."""
     assert "mockhand" not in client.get("/practice.html").text
+
+
+def _block(body, name):
+    """`const NAME = { ... }` 안쪽만 떼어낸다.
+
+    이름이 겹치는 다른 표(KNUCKLE 등)를 잘못 집지 않도록 범위를 좁힌다.
+    """
+    import re
+
+    # 중첩 중괄호가 없는 평평한 객체들이라 첫 `};` 까지가 그 블록이다.
+    match = re.search(rf"const {name} = \{{(.*?)\}};", body, re.S)
+    assert match, f"{name} 블록을 찾지 못했다"
+    return match.group(1)
+
+
+def _segment_lengths(body):
+    import re
+
+    block = _block(body, "SEGMENTS")
+    return {
+        finger: [int(n) for n in values.split(",")]
+        for finger, values in re.findall(r"(\w+):\s*\[([\d,\s]+)\]", block)
+    }
+
+
+def test_mockhand_fingers_have_joints(client):
+    """손가락 하나가 선 하나면 "기울어진 막대" 로 보인다. 마디로 나눈다."""
+    import re
+
+    body = client.get("/mockhand.html").text
+    segments = _segment_lengths(body)
+
+    assert set(segments) == {"index", "middle", "ring", "pinky"}
+    for finger, lengths in segments.items():
+        assert len(lengths) >= 2, f"{finger}: 마디가 하나뿐이다"
+
+    joints = re.search(r"const JOINTS = \[([\d,\s]+)\]", body)
+    assert joints
+    assert len(joints.group(1).split(",")) == len(segments["index"]), (
+        "마디 수와 관절 수가 맞아야 한다"
+    )
+
+    thumb = _block(body, "THUMB")
+    assert re.search(r"segments:\s*\[[\d,\s]+\]", thumb), "엄지도 마디로 나눈다"
+
+
+def test_mockhand_fingers_differ_in_size(client):
+    """엄지가 굵고 소지가 가늘다. 중지가 길고 소지가 짧다."""
+    import re
+
+    body = client.get("/mockhand.html").text
+    widths = dict(
+        (k, int(v)) for k, v in re.findall(r"(\w+):\s*(\d+)", _block(body, "WIDTH"))
+    )
+    assert widths["thumb"] > widths["index"] > widths["pinky"]
+
+    lengths = _segment_lengths(body)
+    total = {finger: sum(values) for finger, values in lengths.items()}
+    assert total["middle"] > total["index"] > total["pinky"]
+    assert total["middle"] > total["ring"] > total["pinky"]
+
+
+def test_mockhand_marks_neutral_and_resting_differently(client):
+    """중립과 안전은 다른 것이므로 같은 표시를 쓰지 않는다 (R3)."""
+    body = client.get("/mockhand.html").text
+    assert "chip neutral" in body and "chip resting" in body
+    # 칩 모양이 서로 다르다: 하나는 채우고 하나는 점선 테두리다.
+    assert "border: 2px dashed" in body
+    assert ".chip.neutral { background: var(--ink)" in body
+
+
+def test_mockhand_shows_state_regardless_of_the_letter_toggle(client):
+    """중립·안전은 정답이 아니라 경계·대기 신호다. 토글과 무관하게 표시한다."""
+    body = client.get("/mockhand.html").text
+    # 글자만 토글에 걸린다.
+    assert "const isLetter =" in body
+    assert "if (isLetter && !shown)" in body
+
+
+def test_mockhand_has_a_preview_mode(client):
+    """세션 없이 11자 + 중립 + 안전을 하나씩 확인할 수 있어야 한다."""
+    body = client.get("/mockhand.html").text
+    assert 'URLSearchParams(location.search).has("preview")' in body
+    assert "ArrowRight" in body and "ArrowLeft" in body
