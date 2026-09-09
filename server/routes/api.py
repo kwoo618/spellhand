@@ -289,7 +289,12 @@ def device_status(request: Request) -> Dict[str, Any]:
 
 @router.post("/device/stop")
 def device_stop(request: Request) -> Dict[str, Any]:
-    """비상 정지. 손을 즉시 안전 자세로 만든다."""
+    """비상 정지. 손을 즉시 안전 자세로 만든다.
+
+    **세션은 그대로 살아 있다.** 진행 중이던 문항만 취소되고 락도 유지된다 —
+    학습자는 같은 문항을 다시 보고 이어 가면 된다. 세션까지 끝내는 것은
+    `/api/device/reset` 이다 (DECISIONS.md §45).
+    """
     station = _station(request)
     station.device.stop()
     return {"status": "stopped"}
@@ -298,6 +303,9 @@ def device_stop(request: Request) -> Dict[str, Any]:
 @router.post("/device/reset")
 def device_reset(request: Request) -> Dict[str, Any]:
     """물린 락을 서버 재시작 없이 푼다 (PRD 11장).
+
+    **정지(`/api/device/stop`)와 결과가 다르다.** 정지는 손만 멈추고 세션을
+    살려 두지만, 이쪽은 세션을 끝낸다.
 
     활성 세션을 `aborted` 로 닫고, 락을 놓고, 손을 안전 자세로 되돌린다.
     답한 문항까지의 기록과 난이도는 남는다 — 중단 세션과 같은 취급이다
@@ -310,7 +318,10 @@ def device_reset(request: Request) -> Dict[str, Any]:
     station = _station(request)
     ended = station.reset_device()
     return {
+        # 무엇을 끝냈는지가 화면 문구의 근거다. 비어 있으면 끝낸 것이 없다 —
+        # "잠긴 세션이 없습니다" 와 "세션 N 을 종료했습니다" 를 여기서 가른다.
         "status": "reset",
         "ended_sessions": list(ended),
+        # 해제 **뒤의** 보유자다. 정상이면 항상 null 이다.
         "lock_holder": station.lock.holder(),
     }

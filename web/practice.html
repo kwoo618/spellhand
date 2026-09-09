@@ -44,6 +44,16 @@
     gap: 0.6rem;
     color: var(--muted);
   }
+  /* 정지는 손이 움직이는 동안에만 나타난다. 찾을 수 있으면 되고, 시선을
+     끌 필요는 없다 — 시선은 로봇손에 있어야 한다 (PRD 14.1). */
+  .status .stop {
+    margin-left: auto;
+    flex: none;
+    padding: 0.4rem 0.9rem;
+    border-color: #8a2b2b;
+    color: #8a2b2b;
+  }
+  .status .stop[hidden] { display: none; }
   .dot {
     width: 0.5rem; height: 0.5rem; border-radius: 50%;
     background: var(--line); flex: none;
@@ -94,7 +104,9 @@
 
   .error { color: #8a2b2b; }
 
-  /* 복구 수단. 학습 흐름의 일부가 아니므로 눈에 띄지 않는 자리에 둔다. */
+  /* 복구 수단. 학습 흐름의 일부가 아니므로 눈에 띄지 않는 자리에 둔다.
+     정지(위, 테두리 있는 버튼)와 달리 밑줄 글자다 — 결과가 다른 두 기능이
+     같아 보이면 안 된다 (DECISIONS.md §45). */
   .recovery { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--line); }
   .recovery button {
     padding: 0.3rem 0;
@@ -127,7 +139,11 @@
 
   <!-- 훈련 -->
   <section id="trainPanel" hidden>
-    <div class="status"><span class="dot" id="dot"></span><span id="status">준비 중</span></div>
+    <div class="status">
+      <span class="dot" id="dot"></span>
+      <span id="status">준비 중</span>
+      <button class="stop" id="stopBtn" type="button" hidden>정지</button>
+    </div>
 
     <label for="answer">읽은 글자</label>
     <input type="text" id="answer" autocomplete="off" autocapitalize="characters" spellcheck="false" disabled>
@@ -158,7 +174,7 @@
   <p class="error" id="error"></p>
 
   <div class="recovery">
-    <button id="resetBtn" type="button">손이 잠겨 있습니다 — 강제 해제</button>
+    <button id="resetBtn" type="button">세션 끝내고 손 놓기</button>
     <span class="note" id="resetNote"></span>
   </div>
 </main>
@@ -221,6 +237,7 @@ function handleEvent(event) {
       el("status").textContent =
         event.attempt > 1 ? "다시 표현 중 — 천천히 봅니다" : "표현 중";
       setAnswering(false);
+      setMoving(true);
       break;
     case "ready":
       el("status").textContent = `표현 중 — ${event.letter_pos + 1}번째 글자`;
@@ -228,14 +245,22 @@ function handleEvent(event) {
     case "done":
       el("dot").classList.remove("live");
       el("status").textContent = "읽은 글자를 입력하세요";
+      setMoving(false);
       setAnswering(true);
       break;
     case "demo":
       el("status").textContent = `시범: ${event.letters.join(" · ")}`;
+      setMoving(false);
       break;
     case "error":
-      setError(`[${event.code}] ${event.detail || ""}`);
       el("dot").classList.remove("live");
+      setMoving(false);
+      if (event.code === "STOPPED") {
+        // 사람이 멈춘 것이다. 오류가 아니므로 오류 자리에 쓰지 않는다.
+        showStopped();
+      } else {
+        setError(`[${event.code}] ${event.detail || ""}`);
+      }
       break;
   }
 }
@@ -245,6 +270,17 @@ function setAnswering(enabled) {
   el("submitBtn").disabled = !enabled;
   el("replayBtn").disabled = !enabled;
   if (enabled) el("answer").focus();
+}
+
+/** 손이 움직이는 동안에만 정지 버튼을 보인다. */
+function setMoving(moving) {
+  el("stopBtn").hidden = !moving;
+}
+
+/** 정지 직후의 표시. 문항은 그대로이므로 다시 보기로 이어 간다. */
+function showStopped() {
+  el("status").textContent = "정지했습니다 — [다시 보기] 로 이어서 봅니다";
+  el("replayBtn").disabled = false;
 }
 
 // --------------------------------------------------------------------- //
@@ -299,10 +335,12 @@ function renderCounter() {
 
 async function present() {
   setAnswering(false);
+  setMoving(true);
   el("status").textContent = "표현 준비 중";
   try {
     await call("POST", `/api/sessions/${state.sessionId}/present`);
   } catch (err) {
+    setMoving(false);
     setError(err.message);
   }
 }
@@ -350,11 +388,26 @@ function renderResult(outcome) {
 
 async function replayDemo() {
   if (!state.demoAvailable) return;
+  setMoving(true);
   try {
     await call("POST", `/api/sessions/${state.sessionId}/demo`);
   } catch (err) {
+    setMoving(false);
     setError(err.message);
   }
+}
+
+/** 비상 정지. 손만 멈춘다 — 세션은 그대로다. */
+async function stopMotion() {
+  try {
+    await call("POST", "/api/device/stop");
+  } catch (err) {
+    setError(err.message);
+    return;
+  }
+  el("dot").classList.remove("live");
+  setMoving(false);
+  showStopped();
 }
 
 async function endSession() {
@@ -399,23 +452,27 @@ function renderSummary(summary) {
 // 강제 해제
 // --------------------------------------------------------------------- //
 
-/** 진행 중인 세션이 날아간다. 한 번 눌러서는 실행되지 않는다. */
+/** 정지와 다르다. 세션이 끝나고 락이 반납된다. 한 번 눌러서는 실행되지 않는다. */
+const RESET_LABEL = "세션 끝내고 손 놓기";
 let resetArmed = null;
 
 function disarmReset() {
   if (resetArmed) { clearTimeout(resetArmed); resetArmed = null; }
   el("resetBtn").classList.remove("armed");
-  el("resetBtn").textContent = "손이 잠겨 있습니다 — 강제 해제";
-  el("resetNote").textContent = "";
+  el("resetBtn").textContent = RESET_LABEL;
 }
 
 async function resetDevice() {
   if (!resetArmed) {
     // 1단계: 확인을 받는다. 8초 안에 다시 누르지 않으면 없던 일이 된다.
     el("resetBtn").classList.add("armed");
-    el("resetBtn").textContent = "정말 해제합니다 — 한 번 더";
-    el("resetNote").textContent = "진행 중인 세션이 중단됩니다. 답한 문항까지는 남습니다.";
-    resetArmed = setTimeout(disarmReset, 8000);
+    el("resetBtn").textContent = "정말 끝냅니다 — 한 번 더";
+    el("resetNote").textContent =
+      "진행 중인 세션이 중단됩니다. 답한 문항까지는 남습니다.";
+    resetArmed = setTimeout(() => {
+      disarmReset();
+      el("resetNote").textContent = "";
+    }, 8000);
     return;
   }
 
@@ -427,21 +484,26 @@ async function resetDevice() {
     state.sessionId = null;
     if (state.socket) { state.socket.close(); state.socket = null; }
     disarmReset();
+    // 무엇을 끝냈는지 그대로 쓴다. 끝낸 것이 없으면 없다고 쓴다.
     el("resetNote").textContent =
       result.ended_sessions.length
-        ? `세션 ${result.ended_sessions.join(", ")} 을 중단하고 손을 놓았습니다.`
-        : "잡혀 있던 세션이 없습니다. 손을 안전 자세로 되돌렸습니다.";
+        ? `세션 ${result.ended_sessions.join(", ")} 을 종료하고 손을 놓았습니다.`
+        : "잠긴 세션이 없습니다. 손을 안전 자세로 되돌렸습니다.";
+    setMoving(false);
+    el("dot").classList.remove("live");
     show("trainPanel", false);
     show("summaryPanel", false);
     show("startPanel", true);
   } catch (err) {
     disarmReset();
+    el("resetNote").textContent = "";
     setError(err.message);
   }
 }
 
 // --------------------------------------------------------------------- //
 
+el("stopBtn").addEventListener("click", stopMotion);
 el("resetBtn").addEventListener("click", resetDevice);
 el("startBtn").addEventListener("click", startSession);
 el("name").addEventListener("keydown", (e) => { if (e.key === "Enter") startSession(); });
