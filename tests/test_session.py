@@ -744,3 +744,176 @@ def test_length_alone_cannot_reveal_the_answer(runner):
     lengths = {length for length, _ in prompts}
     answers = {expected for _, expected in prompts}
     assert len(answers) > len(lengths), "같은 길이에 서로 다른 정답이 있어야 한다"
+
+
+# --------------------------------------------------------------------------- #
+# 난이도 이력 지속 (DECISIONS §40)
+# --------------------------------------------------------------------------- #
+
+def first_prompt_of(runner, learner="haru", **plan_kwargs):
+    """세션을 돌리고 첫 문항의 난이도를 돌려준다."""
+    seen = []
+
+    def capture(prompt: ItemPrompt, expected: str):
+        seen.append(prompt)
+        return expected
+
+    runner.run(learner, capture, plan=SessionPlan(**plan_kwargs))
+    return seen[0]
+
+
+def saved_difficulty(db, learner_id, track):
+    from server.db import load_difficulty
+
+    with db.session() as session:
+        return load_difficulty(session, learner_id, track)
+
+
+def test_a_new_learner_starts_at_the_initial_difficulty(runner, config):
+    prompt = first_prompt_of(runner, discrimination_items=1, word_items=0)
+    assert prompt.length == DIFFICULTY_LADDER[0][0]
+    assert prompt.boundary == DIFFICULTY_LADDER[0][1]
+    assert prompt.hold_ms == config.timing.hold_default_ms
+
+
+def test_the_final_difficulty_is_saved(runner, db, config):
+    summary = runner.run(
+        "haru", always_correct, plan=SessionPlan(discrimination_items=3, word_items=0)
+    )
+    row = saved_difficulty(db, summary.learner_id, TRACK_DISCRIMINATION)
+
+    assert row is not None
+    # 3문항 연속 정답: 3000 -> 2550 -> 2167 -> 1841
+    assert row.hold_ms == 1841
+    assert row.length == DIFFICULTY_LADDER[0][0]
+    assert row.updated_at is not None
+
+
+def test_the_next_session_resumes_where_the_last_one_ended(runner, db):
+    """10세션을 해도 매번 처음부터 시작하던 문제를 고정한다."""
+    runner.run(
+        "haru", always_correct, plan=SessionPlan(discrimination_items=3, word_items=0)
+    )
+    ended_at = saved_difficulty(db, 1, TRACK_DISCRIMINATION).hold_ms
+
+    resumed = first_prompt_of(runner, discrimination_items=1, word_items=0)
+    assert resumed.hold_ms == ended_at == 1841
+
+
+def test_repeated_sessions_keep_climbing(runner, db, config):
+    """세션을 거듭하면 난이도가 계속 올라간다 — 반복 훈련의 경로."""
+    holds = []
+    for _ in range(4):
+        holds.append(
+            first_prompt_of(runner, discrimination_items=3, word_items=0).hold_ms
+        )
+    assert holds == sorted(holds, reverse=True), holds
+    assert holds[0] == config.timing.hold_default_ms
+    assert holds[-1] < holds[0], "네 번째 세션은 첫 세션보다 어렵게 시작한다"
+
+
+def test_the_two_tracks_are_stored_and_restored_independently(runner, db, config):
+    """판별에서 오른 난이도가 단어 난이도에 섞이지 않는다."""
+    runner.run(
+        "haru", always_correct, plan=SessionPlan(discrimination_items=6, word_items=0)
+    )
+
+    disc = saved_difficulty(db, 1, TRACK_DISCRIMINATION)
+    word = saved_difficulty(db, 1, TRACK_WORD)
+    assert disc.hold_ms < config.timing.hold_default_ms
+    assert word is None, "단어 문항을 내지 않았으므로 단어 난이도는 생기지 않는다"
+
+    # 이제 단어만 낸다. 단어는 초기값에서 시작하고 판별 기록은 그대로다.
+    seen = []
+
+    def capture(prompt: ItemPrompt, expected: str):
+        seen.append(prompt)
+        return expected
+
+    runner.run("haru", capture, plan=SessionPlan(discrimination_items=0, word_items=2))
+
+    assert seen[0].hold_ms == config.timing.hold_default_ms, "단어는 처음부터"
+    assert saved_difficulty(db, 1, TRACK_DISCRIMINATION).hold_ms == disc.hold_ms
+
+
+def test_a_wrong_word_answer_does_not_ease_the_discrimination_track(runner, db, config):
+    """단어에서 틀렸다고 판별 난이도가 내려가면 두 트랙을 섞는 것이다."""
+
+    def word_wrong(prompt: ItemPrompt, expected: str) -> str:
+        if prompt.track == TRACK_WORD:
+            return always_wrong(prompt, expected)
+        return expected
+
+    runner.run(
+        "haru", word_wrong, plan=SessionPlan(discrimination_items=3, word_items=2)
+    )
+
+    disc = saved_difficulty(db, 1, TRACK_DISCRIMINATION)
+    word = saved_difficulty(db, 1, TRACK_WORD)
+
+    # 판별은 3연속 정답만큼 내려갔다.
+    assert disc.hold_ms == 1841
+    # 단어는 오답 처리로 되돌아갔다. 판별 값과 무관하다.
+    assert word.hold_ms != disc.hold_ms
+
+
+def test_progress_survives_an_aborted_session(runner, db, config):
+    """중간에 끊겨도 그때까지 오른 만큼은 남는다.
+
+    문항 기록(items)은 답할 때마다 남는다. 난이도만 버리면 같은 사건을 두 가지
+    규칙으로 다루는 셈이라, 난이도도 문항마다 저장한다 (DECISIONS.md §40).
+    """
+    boom = RuntimeError("device exploded")
+
+    def fail_on_third(prompt: ItemPrompt, expected: str) -> str:
+        if prompt.seq == 3:
+            raise boom
+        return expected
+
+    with pytest.raises(RuntimeError):
+        runner.run(
+            "haru", fail_on_third,
+            plan=SessionPlan(discrimination_items=5, word_items=0),
+        )
+
+    row = saved_difficulty(db, 1, TRACK_DISCRIMINATION)
+    assert row is not None, "중단되어도 진행한 만큼은 남아야 한다"
+    # 2문항을 맞힌 상태: 3000 -> 2550 -> 2167
+    assert row.hold_ms == 2167
+
+
+def test_an_aborted_session_is_marked_aborted(runner, db):
+    def fail_immediately(prompt: ItemPrompt, expected: str) -> str:
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError):
+        runner.run(
+            "haru", fail_immediately,
+            plan=SessionPlan(discrimination_items=2, word_items=0),
+        )
+    with db.session() as session:
+        row = session.query(TrainingSession).one()
+    assert row.status == "aborted"
+    # 한 문항도 답하지 못했으므로 저장된 난이도도 없다.
+    assert saved_difficulty(db, 1, TRACK_DISCRIMINATION) is None
+
+
+def test_the_slow_replay_speed_is_not_carried_over(runner, db, config):
+    """오답 재생의 느린 전이(1800ms)가 다음 세션으로 이월되면 안 된다.
+
+    transition_ms 는 난이도 축이 아니다 (PRD 9.1).
+    """
+    runner.run(
+        "haru", always_wrong, plan=SessionPlan(discrimination_items=1, word_items=0)
+    )
+    resumed = first_prompt_of(runner, discrimination_items=1, word_items=0)
+    assert resumed.transition_ms == config.timing.transition_ms
+    assert resumed.transition_ms != config.timing.transition_slow_ms
+
+
+def test_two_learners_do_not_share_progress(runner, db, config):
+    runner.run(
+        "haru", always_correct, plan=SessionPlan(discrimination_items=4, word_items=0)
+    )
+    fresh = first_prompt_of(runner, learner="mina", discrimination_items=1, word_items=0)
+    assert fresh.hold_ms == config.timing.hold_default_ms

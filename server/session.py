@@ -28,11 +28,14 @@ from server.db import (
     RESULT_CORRECT,
     TRACK_DISCRIMINATION,
     TRACK_WORD,
+    TRACKS,
     Confusion,
     Database,
     Item,
     TrainingSession,
     get_or_create_learner,
+    load_difficulty,
+    save_difficulty,
     utcnow,
 )
 from server.device import DeviceAdapter
@@ -365,7 +368,9 @@ class SessionController:
         self._plan = SessionPlan()
         self._schedule: List[str] = []
         self._seq = 0
-        self._difficulty: Optional[Difficulty] = None
+        # 난이도는 **트랙별로** 따로 간다. 단어에서 틀렸다고 판별 문항이
+        # 쉬워지면 두 트랙을 섞는 것이다 (DECISIONS.md §40).
+        self._difficulty: Dict[str, Difficulty] = {}
         self._active_spec: Optional[ItemSpec] = None
         self._active_key: Optional[_AnswerKey] = None
         self._attempt = 1
@@ -460,12 +465,9 @@ class SessionController:
 
         self._schedule = [TRACK_DISCRIMINATION] * self._plan.discrimination_items
         self._schedule += [TRACK_WORD] * self._plan.word_items
-        self._difficulty = Difficulty(
-            length=DIFFICULTY_LADDER[0][0],
-            hold_ms=self._config.timing.hold_default_ms,
-            transition_ms=self._config.timing.transition_ms,
-            boundary=DIFFICULTY_LADDER[0][1],
-        )
+        self._difficulty = {
+            track: self._restore_difficulty(learner_id, track) for track in TRACKS
+        }
         # heavy_letters 비율은 세션 전체 문항 수 기준이다 (DECISIONS §19).
         self._heavy_caps = heavy_letter_caps(
             self._config, self._plan.discrimination_items
@@ -477,6 +479,44 @@ class SessionController:
             else SessionState.AWAITING_ITEM
         )
         return session_id
+
+    def _restore_difficulty(self, learner_id: int, track: str) -> Difficulty:
+        """이 학습자가 그 트랙에서 마지막에 있던 자리. 이력이 없으면 초기값.
+
+        `transition_ms` 는 이월하지 않고 항상 기본값으로 시작한다. 난이도 축이
+        아니라 오답 재생에서만 늘리는 값이라(PRD 9.1), 이월하면 다음 세션이
+        느린 재생 상태로 시작한다 (DECISIONS.md §40).
+        """
+        with self._db.session() as db:
+            saved = load_difficulty(db, learner_id, track)
+            if saved is None:
+                return Difficulty(
+                    length=DIFFICULTY_LADDER[0][0],
+                    hold_ms=self._config.timing.hold_default_ms,
+                    transition_ms=self._config.timing.transition_ms,
+                    boundary=DIFFICULTY_LADDER[0][1],
+                )
+            return Difficulty(
+                length=saved.length,
+                hold_ms=saved.hold_ms,
+                transition_ms=self._config.timing.transition_ms,
+                boundary=saved.boundary,
+            )
+
+    def _persist_difficulty(self, track: str) -> None:
+        """이 트랙의 지금 난이도를 저장한다. 다음 세션이 여기서 이어 간다."""
+        difficulty = self._difficulty[track]
+        with self._db.session() as db:
+            save_difficulty(
+                db,
+                self.learner_id,
+                track,
+                length=difficulty.length,
+                hold_ms=difficulty.hold_ms,
+                boundary=difficulty.boundary,
+                now=self._clock(),
+            )
+            db.commit()
 
     def next_item(self) -> ItemPrompt:
         """다음 문항을 만든다. 재생이 걸려 있으면 같은 문항을 2회째로 돌려준다."""
@@ -497,7 +537,7 @@ class SessionController:
             self._seq += 1
             self._attempt = 1
             spec = self._generate(
-                self.session_id, self.learner_id, track, self._difficulty
+                self.session_id, self.learner_id, track, self._difficulty[track]
             )
             for letter in self._heavy_used:
                 if letter in spec.letters:
@@ -579,28 +619,36 @@ class SessionController:
         retry = (not correct) and self._attempt == 1
         demo: Optional[DemoShown] = None
 
+        # 적응은 **이 문항의 트랙에만** 적용된다.
+        track = spec.track
+        current = self._difficulty[track]
+
         if correct:
-            self._difficulty = self._adaptation.on_correct(
-                self._difficulty, self._config
+            self._difficulty[track] = self._adaptation.on_correct(
+                current, self._config
             )
         elif retry:
-            retried = self._adaptation.on_wrong_first(self._difficulty, self._config)
+            retried = self._adaptation.on_wrong_first(current, self._config)
             self._active_spec = ItemSpec(
-                track=spec.track,
+                track=track,
                 letters=spec.letters,
                 hold_ms=retried.hold_ms,
                 transition_ms=retried.transition_ms,
                 boundary=BOUNDARY_EXPLICIT,
             )
-            self._difficulty = retried
+            self._difficulty[track] = retried
             self._retry_pending = True
         else:
             # 2회째 오답. 혼동한 두 글자를 나란히 시범한 뒤 후퇴한다.
-            demo = self._demo_pair(self.session_id, spec.track, judgement)
+            demo = self._demo_pair(self.session_id, track, judgement)
             self._last_demo = demo
-            self._difficulty = self._adaptation.on_wrong_second(
-                self._difficulty, self._config
+            self._difficulty[track] = self._adaptation.on_wrong_second(
+                current, self._config
             )
+
+        # 문항마다 저장한다. 세션이 중간에 끊겨도 그때까지 오른 만큼은 남는다
+        # (DECISIONS.md §40).
+        self._persist_difficulty(track)
 
         self._outcomes.append(
             _outcome(self._seq, spec, self._attempt, answer, judgement, demo=demo)

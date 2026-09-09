@@ -22,6 +22,7 @@ from sqlalchemy import (
     Integer,
     String,
     Text,
+    UniqueConstraint,
     create_engine,
     select,
 )
@@ -41,6 +42,7 @@ __all__ = [
     "Item",
     "Confusion",
     "DeviceLock",
+    "LearnerDifficulty",
     "Database",
     "utcnow",
     "TRACK_DISCRIMINATION",
@@ -55,6 +57,8 @@ __all__ = [
     "BOUNDARY_DIRECT",
     "BOUNDARIES",
     "DEVICE_LOCK_ID",
+    "load_difficulty",
+    "save_difficulty",
 ]
 
 # 트랙. 이 둘의 통계는 어떤 경로로도 섞이지 않는다 (PRD 9.2).
@@ -156,6 +160,39 @@ class Confusion(Base):
     given: Mapped[str] = mapped_column(Text, nullable=False)
 
 
+class LearnerDifficulty(Base):
+    """학습자가 **트랙별로** 마지막에 도달한 난이도.
+
+    세션이 끝날 때마다 갱신되고 다음 세션이 여기서 이어 시작한다. 이것이 없으면
+    10세션을 해도 매번 3글자·또박또박·최대 유지에서 다시 시작한다 — 반복으로
+    판별력을 기른다는 훈련 모델의 경로가 막힌다 (DECISIONS.md §40).
+
+    **마지막 상태만 담는다.** 학습자·트랙당 한 행이고 시계열이 아니다. 추이가
+    필요해지면 그때 이력 테이블을 따로 만든다.
+
+    `transition_ms` 는 여기 없다. 난이도 축이 아니라 오답 재생에서만 늘리는
+    값이라(PRD 9.1), 이월하면 다음 세션이 느린 재생 상태로 시작한다.
+    """
+
+    __tablename__ = "learner_difficulty"
+    __table_args__ = (
+        # 학습자·트랙당 한 행. 두 트랙의 난이도가 섞일 자리를 스키마에서 없앤다.
+        UniqueConstraint("learner_id", "track", name="learner_difficulty_one_per_track"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    learner_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("learners.id"), nullable=False
+    )
+    track: Mapped[str] = mapped_column(Text, nullable=False)
+    length: Mapped[int] = mapped_column(Integer, nullable=False)
+    hold_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    boundary: Mapped[str] = mapped_column(Text, nullable=False)
+    # 감쇠(오래 쉰 학습자의 난이도를 낮추는 것)는 만들지 않았다. 나중에 판단할
+    # 수 있도록 시각만 남긴다 (DECISIONS.md §40).
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
 class DeviceLock(Base):
     __tablename__ = "device_lock"
     __table_args__ = (CheckConstraint("id = 1", name="device_lock_single_row"),)
@@ -232,3 +269,38 @@ def get_or_create_learner(session: Session, name: str) -> Learner:
         session.add(learner)
         session.flush()
     return learner
+
+
+def load_difficulty(
+    session: Session, learner_id: int, track: str
+) -> Optional[LearnerDifficulty]:
+    """학습자의 해당 트랙 마지막 난이도. 이력이 없으면 None."""
+    return session.scalar(
+        select(LearnerDifficulty).where(
+            LearnerDifficulty.learner_id == learner_id,
+            LearnerDifficulty.track == track,
+        )
+    )
+
+
+def save_difficulty(
+    session: Session,
+    learner_id: int,
+    track: str,
+    *,
+    length: int,
+    hold_ms: int,
+    boundary: str,
+    now: Optional[datetime] = None,
+) -> LearnerDifficulty:
+    """트랙별 난이도를 덮어쓴다. 학습자·트랙당 한 행이다."""
+    row = load_difficulty(session, learner_id, track)
+    if row is None:
+        row = LearnerDifficulty(learner_id=learner_id, track=track)
+        session.add(row)
+    row.length = length
+    row.hold_ms = hold_ms
+    row.boundary = boundary
+    row.updated_at = now or utcnow()
+    session.flush()
+    return row

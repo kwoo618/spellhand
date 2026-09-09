@@ -9,6 +9,8 @@ from sqlalchemy.exc import IntegrityError
 from server.db import (
     BOUNDARIES,
     DEVICE_LOCK_ID,
+    TRACK_DISCRIMINATION,
+    TRACK_WORD,
     RESULTS,
     TRACKS,
     Confusion,
@@ -16,7 +18,10 @@ from server.db import (
     DeviceLock,
     Item,
     Learner,
+    LearnerDifficulty,
     TrainingSession,
+    load_difficulty,
+    save_difficulty,
     get_or_create_learner,
     utcnow,
 )
@@ -44,6 +49,7 @@ def test_all_tables_are_created(db):
         "items",
         "confusions",
         "device_lock",
+        "learner_difficulty",
     }
 
 
@@ -217,3 +223,120 @@ def test_file_backed_database_persists(tmp_path):
     second = Database(f"sqlite+pysqlite:///{path.as_posix()}")
     with second.session() as session:
         assert session.scalar(select(Learner).where(Learner.name == "haru"))
+
+
+# --------------------------------------------------------------------------- #
+# 학습자 난이도 이력
+# --------------------------------------------------------------------------- #
+
+def test_difficulty_is_absent_for_a_new_learner(db):
+    with db.session() as session:
+        learner = get_or_create_learner(session, "haru")
+        session.commit()
+        assert load_difficulty(session, learner.id, TRACK_DISCRIMINATION) is None
+
+
+def test_difficulty_round_trips(db):
+    with db.session() as session:
+        learner = get_or_create_learner(session, "haru")
+        save_difficulty(
+            session,
+            learner.id,
+            TRACK_DISCRIMINATION,
+            length=5,
+            hold_ms=1564,
+            boundary="direct",
+        )
+        session.commit()
+
+    with db.session() as session:
+        row = load_difficulty(session, learner.id, TRACK_DISCRIMINATION)
+        assert (row.length, row.hold_ms, row.boundary) == (5, 1564, "direct")
+        assert isinstance(row.updated_at, datetime)
+
+
+def test_saving_twice_overwrites_rather_than_appends(db):
+    """마지막 상태만 담는다. 시계열이 아니다."""
+    with db.session() as session:
+        learner = get_or_create_learner(session, "haru")
+        for hold in (3000, 2550, 2167):
+            save_difficulty(
+                session,
+                learner.id,
+                TRACK_DISCRIMINATION,
+                length=3,
+                hold_ms=hold,
+                boundary="explicit",
+            )
+        session.commit()
+
+    with db.session() as session:
+        rows = session.scalars(select(LearnerDifficulty)).all()
+        assert len(rows) == 1
+        assert rows[0].hold_ms == 2167
+
+
+def test_the_two_tracks_have_separate_rows(db):
+    """판별 난이도와 단어 난이도는 별개다."""
+    with db.session() as session:
+        learner = get_or_create_learner(session, "haru")
+        save_difficulty(
+            session, learner.id, TRACK_DISCRIMINATION,
+            length=7, hold_ms=800, boundary="direct",
+        )
+        save_difficulty(
+            session, learner.id, TRACK_WORD,
+            length=3, hold_ms=3000, boundary="explicit",
+        )
+        session.commit()
+
+    with db.session() as session:
+        disc = load_difficulty(session, learner.id, TRACK_DISCRIMINATION)
+        word = load_difficulty(session, learner.id, TRACK_WORD)
+        assert (disc.length, disc.hold_ms) == (7, 800)
+        assert (word.length, word.hold_ms) == (3, 3000)
+
+
+def test_learners_do_not_share_difficulty(db):
+    with db.session() as session:
+        haru = get_or_create_learner(session, "haru")
+        mina = get_or_create_learner(session, "mina")
+        save_difficulty(
+            session, haru.id, TRACK_DISCRIMINATION,
+            length=7, hold_ms=800, boundary="direct",
+        )
+        session.commit()
+
+    with db.session() as session:
+        assert load_difficulty(session, mina.id, TRACK_DISCRIMINATION) is None
+
+
+def test_one_row_per_learner_and_track_is_enforced(db):
+    """스키마 수준에서 막는다. 코드가 실수해도 두 행이 생기지 않는다."""
+    with db.session() as session:
+        learner = get_or_create_learner(session, "haru")
+        session.add_all([
+            LearnerDifficulty(
+                learner_id=learner.id, track=TRACK_DISCRIMINATION,
+                length=3, hold_ms=3000, boundary="explicit", updated_at=utcnow(),
+            ),
+            LearnerDifficulty(
+                learner_id=learner.id, track=TRACK_DISCRIMINATION,
+                length=5, hold_ms=2000, boundary="direct", updated_at=utcnow(),
+            ),
+        ])
+        with pytest.raises(IntegrityError):
+            session.commit()
+
+
+def test_difficulty_has_no_transition_column(db):
+    """transition_ms 는 난이도 축이 아니다 (PRD 9.1).
+
+    이월하면 다음 세션이 오답 재생 상태(1800ms)로 시작한다.
+    """
+    columns = {
+        c["name"] for c in inspect(db.engine).get_columns("learner_difficulty")
+    }
+    assert columns == {
+        "id", "learner_id", "track", "length", "hold_ms", "boundary", "updated_at"
+    }

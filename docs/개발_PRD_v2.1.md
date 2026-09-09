@@ -485,7 +485,24 @@ CREATE TABLE device_lock (
     acquired_at  TIMESTAMP,
     heartbeat_at TIMESTAMP
 );
+
+CREATE TABLE learner_difficulty (
+    id           INTEGER PRIMARY KEY,
+    learner_id   INTEGER NOT NULL REFERENCES learners(id),
+    track        TEXT NOT NULL,           -- discrimination|word
+    length       INTEGER NOT NULL,        -- ②축
+    hold_ms      INTEGER NOT NULL,        -- ①축
+    boundary     TEXT NOT NULL,           -- ③축. explicit|direct
+    updated_at   TIMESTAMP NOT NULL,
+    UNIQUE (learner_id, track)
+);
 ```
+
+**`learner_difficulty`는 마지막 상태만 담는다.** 학습자·트랙당 한 행이고 시계열이 아니다. 세션 간 난이도 이월에 필요한 것은 "마지막에 어디까지 갔는가"뿐이며, 추이가 필요해지면 그때 이력 테이블을 따로 만든다. 트랙별로 행이 나뉘는 것은 판별 난이도와 단어 난이도가 별개이기 때문이다 — `UNIQUE (learner_id, track)`이 두 트랙이 섞일 자리를 스키마에서 없앤다. (DECISIONS §40)
+
+**`transition_ms`는 저장하지 않는다.** 난이도 축이 아니라 오답 재생에서만 늘리는 값이라(9.1), 이월하면 다음 세션이 느린 재생 상태로 시작한다. 복원 시 항상 `timing.transition_ms`로 되돌린다.
+
+**`updated_at`은 지금 쓰지 않는다.** 오래 쉰 학습자의 난이도를 낮추는 감쇠는 근거가 없어 만들지 않았다. 나중에 실데이터로 판단할 수 있도록 시각만 남긴다.
 
 **`unlisted` 컬럼은 만들지 않는다.** 9.3은 `confusion_pairs`에 없는 혼동을 `unlisted`로 표시한다고 했으나, 컬럼으로 굳히면 `confusion_pairs`가 바뀔 때 과거 기록만 낡은 판정으로 남는다. 3주차 판별 테스트로 세트가 바뀔 가능성이 실재하므로 **집계 시점에 계산**한다. (DECISIONS §18)
 
@@ -551,12 +568,18 @@ ADAPT = {
 ```
 
 - `correct`가 3000→2550→2167→1841→1564→1329→1129→959→815→800에서 바닥을 친다(9단계). 그 뒤 정답은 `length` 증가 또는 `direct` 전환으로 넘어간다 (②·③축 우선 순서: length 3→5 → direct → length 5→7)
-- **부작용:** ①축이 길어져 12문항 세션에서는 ②·③축이 거의 발동하지 않는다. 전부 정답인 학습자도 8문항 안에 1~2단까지만 오른다. 감쇠 계수(0.85)나 단 전환 조건을 조정할지는 4주차 실데이터로 판단한다 (DECISIONS §39)
+- **부작용:** ①축이 길어져 **한 세션 안에서는** ②·③축이 거의 발동하지 않는다. 전부 정답인 학습자도 8문항 안에 1~2단까지만 오른다. 다만 난이도가 세션을 넘어 이어지므로(아래) 여러 세션에 걸쳐서는 사다리 끝까지 오른다. 감쇠 계수(0.85)나 단 전환 조건을 조정할지는 4주차 실데이터로 판단한다 (DECISIONS §39)
 - **①축은 양방향이다.** 바닥을 친 뒤에도 오답이 나면 유지 시간이 회복된다. 단조 증가로 두면 축 ①이 바닥에 고정된 채 다른 축만 올라가, 후퇴한 학습자가 회복 수단을 잃는다. 난이도 축이 서로 독립이라는 전제가 깨진다. (DECISIONS §23)
 - **난이도 사다리에 데드엔드가 없어야 한다.** 오답 2회로 길이가 5→4로 내려갔을 때 `(4, explicit)`이 사다리에 없으면 "다음 칸 없음"이 되어 후퇴한 학습자가 영영 올라오지 못한다. 후퇴 경로에서 도달 가능한 모든 조합이 사다리 위에 있어야 하며, 회귀 테스트로 고정한다.
 - `order` 결과는 `wrong_first`와 같이 처리하되 `demo_pair()` 대상이 없으므로 2회째도 시범 없이 후퇴만 한다
 - `demo_pair()`: 혼동 첫 위치의 (expected, given) 쌍을 `demo_letter(expected, HOLD_MAX) → neutral → demo_letter(given, HOLD_MAX)`로 시범. 힌트 문구는 `confusion_pairs[].hint`에서 조회. 시연 ④의 하이라이트
 - **적응 로직은 교체 가능한 인터페이스로 분리한다.** 현재 구현은 규칙 기반(`RuleAdaptation`)이고, Phase 4에서 LLM이 같은 자리에 들어간다.
+
+**난이도는 세션을 넘어 이어진다.** 세션 시작 시 `learner_difficulty`에서 트랙별로 복원하고, 문항에 답할 때마다 저장한다. 이력이 없는 신규 학습자만 초기값(`3글자 · explicit · hold_default`)에서 시작한다.
+
+- **트랙별로 따로 간다.** 단어에서 틀렸다고 판별 문항이 쉬워지면 두 트랙을 섞는 것이다. `RuleAdaptation`은 그 문항의 트랙 난이도에만 적용된다
+- **문항마다 저장한다.** 세션이 중간에 끊겨도 그때까지 오른 만큼은 남는다. 문항 기록(`items`)은 답할 때마다 남으므로, 난이도만 버리면 같은 사건을 두 규칙으로 다루는 셈이다
+- 이월이 없으면 10세션을 해도 매번 3글자·또박또박·최대 유지에서 시작한다. "반복 세션으로 판별력을 기른다"는 훈련 모델의 경로가 막히고, 4주차 실데이터 수집(10명 × 2세션)에서 2세션째가 1세션째와 같은 난이도로 시작해 **반복 효과를 측정할 수 없다** (DECISIONS §40)
 
 ### 9.5 문항 생성 (규칙 기반 폴백)
 
