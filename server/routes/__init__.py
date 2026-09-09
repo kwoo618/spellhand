@@ -57,6 +57,12 @@ logger = logging.getLogger(__name__)
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 WEB_ROOT = REPO_ROOT / "web"
 
+# mockhand 로 flex 를 보내는 주기. 보간 틱(20ms)마다 보내면 초당 50건인데,
+# 화면이 확인하려는 것은 "값이 맞는가" 이지 애니메이션 품질이 아니다.
+# 50ms 면 900ms 전이 하나가 18프레임으로 그려져 움직임이 끊겨 보이지 않으면서
+# 트래픽은 1/2.5 로 준다 (DECISIONS.md §41).
+FLEX_FEED_INTERVAL_MS = 50
+
 
 @dataclass
 class Station:
@@ -227,6 +233,63 @@ def create_app(station: Optional[Station] = None, **kwargs: object) -> FastAPI:
             pass
         finally:
             station.hub.unsubscribe(session_id, queue)
+
+    @app.websocket("/ws/device")
+    async def device_flex(websocket: WebSocket) -> None:
+        """Mock 손의 flex 를 일정 주기로 흘려보낸다 (mockhand.html 용).
+
+        **세션과 무관하다.** 디바이스만 두드려 보는 개발 중에도 열려야 하므로
+        `/ws/session/{id}` 를 쓰지 않는다 (DECISIONS.md §41).
+
+        **읽기 전용이고 Mock 전용이다.** 이 소켓으로 손을 움직일 수단은 없고,
+        실기 모드에서는 열리지 않는다 — 실기는 실물을 보면 된다.
+        """
+        await websocket.accept()
+
+        read_flex = getattr(station.device, "current_flex", None)
+        if station.device_mode != DEVICE_MODE_MOCK or read_flex is None:
+            await websocket.send_json(
+                {
+                    "type": "unavailable",
+                    "reason": "MOCK_ONLY",
+                    "detail": (
+                        f"the flex feed is a mock-only development view; "
+                        f"DEVICE_MODE is {station.device_mode!r}"
+                    ),
+                }
+            )
+            await websocket.close()
+            return
+
+        # 자세 표를 한 번만 보낸다. 어느 자세인지는 클라이언트가 flex 로
+        # 되짚는다 — 서버가 "지금 무슨 글자" 를 들고 있지 않기도 하고,
+        # 그렇게 해야 flex 와 자세가 맞는지를 확인하게 된다 (DECISIONS.md §41).
+        await websocket.send_json(
+            {
+                "type": "hello",
+                "fingers": list(station.config.fingers),
+                "poses": {
+                    letter: dict(pose)
+                    for letter, pose in station.config.poses.items()
+                },
+                "neutral": dict(station.config.neutral),
+                "safe": dict(station.config.safe),
+                "interval_ms": FLEX_FEED_INTERVAL_MS,
+            }
+        )
+
+        try:
+            while True:
+                await websocket.send_json(
+                    {
+                        "type": "flex",
+                        "flex": dict(read_flex()),
+                        "busy": station.device.is_busy,
+                    }
+                )
+                await asyncio.sleep(FLEX_FEED_INTERVAL_MS / 1000)
+        except WebSocketDisconnect:
+            pass
 
     app.include_router(api_router)
 

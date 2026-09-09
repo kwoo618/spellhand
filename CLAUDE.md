@@ -70,11 +70,27 @@ R5. 추측으로 빈칸을 채우지 않는다. TBD는 TBD로 남긴다. 규칙�
 
 ## 현재 상태
 
-- 목표: 신규 개발. 기준 문서는 기획서 v3 + PRD v2.
-  1차 완료 기준은 Mock에서 판별 8 + 단어 4 세션이 끝까지 돌고 요약이 트랙별로 나오는 것
-- 완료: config 계층 (poses.json schema v2 + 검증 34테스트), words.json + 필터 (24테스트)
-- 진행 중: server/calibration.py (flex → 각도 변환)
-- 막힌 것: 없음. TBD-2(유지 시간 하한) 확정 — 하한 자체가 불필요해 800ms로 인하.
-  `observe_from`은 `arrival` 유지 (DECISIONS.md §7)
-- 미해결: 제3자 판별 파일럿 미실시. 11자 세트는 아직 지각적으로 검증되지 않음
-- 다음: DeviceAdapter + MockDevice → DB 스키마 → judge → items → safety → session → REST/WS
+- 목표: 신규 개발. 기준 문서는 기획서 v3 + PRD v2.1.
+  **1차 완료 기준(Mock에서 판별 8 + 단어 4 세션 완주 + 트랙별 요약)은 달성했다.**
+
+- 완료 (380테스트):
+  - `config` — poses.json schema v2(핀 포함) + words.json 필터
+  - `calibration` — flex ↔ 각도, 이중 clamp, CAL_HASH
+  - `device` — Pose/DeviceAdapter(동기), MockDevice, SerialDevice, 팩토리
+  - `db` `judge` `stats` `items` `safety` `session` — 세션 루프와 안전 게이트
+  - `routes` — REST + WS, `practice.html`, `mockhand.html`
+  - `firmware/hand_controller` — P/H/Z/N 프로토콜. Uno 컴파일 확인, **업로드 안 함**
+  - `tools/gen_calibration.py` — calibration.h 생성 + `--check`
+
+- 진행 중: 없음
+
+- 막힌 것: 없음
+
+- 미해결:
+  - **제3자 판별 파일럿 미실시.** 11자 세트가 지각적으로 검증되지 않았다 (3주차)
+  - **①축이 ②·③축을 세션 안에서 밀어낸다** (DECISIONS §39). 감쇠 계수·단 전환
+    조건 조정은 4주차 실측 오답률로 판단한다
+  - 실기 미연결. `SERIAL_PORT` 미회신, 보드 미확정(Uno 기준 작성),
+    `arduino-cli lib install Servo` 필요, 전기팀 입회 필요
+
+- 다음: MCP 서버 → 에이전트(`agent.py`) → 진단 뷰(`teacher.html`, MCP 로그 패널)

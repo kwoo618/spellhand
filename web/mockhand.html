@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mockhand — Mock 디바이스 보기</title>
+<style>
+  /* 개발 도구이자 발표 폴백이다. 제품 기능이 아니다 (PRD 6.3).
+     발표장 뒤에서도 보여야 하므로 선을 굵게, 대비를 강하게 둔다.
+     장식은 넣지 않는다 — 손 모양과 숫자만 읽히면 된다. */
+  :root {
+    --ink: #111;
+    --paper: #fff;
+    --line: #111;
+    --dim: #b9b9b9;
+    --muted: #6b6b6b;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font: 16px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 2rem 1rem;
+    gap: 1.5rem;
+  }
+  header {
+    width: 100%;
+    max-width: 34rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    border-bottom: 3px solid var(--line);
+    padding-bottom: 0.5rem;
+  }
+  h1 { font-size: 1rem; margin: 0; letter-spacing: 0.1em; }
+  .state { color: var(--muted); }
+  .state.live { color: var(--ink); font-weight: 700; }
+
+  svg { width: min(34rem, 92vw); height: auto; display: block; }
+
+  /* 손가락 굵기와 대비 — 뒤에서도 보이도록 */
+  .bone { stroke: var(--line); stroke-width: 14; stroke-linecap: round; fill: none; }
+  .palm { fill: none; stroke: var(--line); stroke-width: 14; stroke-linejoin: round; }
+
+  .readout {
+    width: min(34rem, 92vw);
+    border-top: 3px solid var(--line);
+    padding-top: 0.75rem;
+  }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 0.25rem 0; font-variant-numeric: tabular-nums; }
+  th { color: var(--muted); font-weight: 400; width: 6.5rem; }
+  td.value { width: 5rem; font-size: 1.25rem; font-weight: 700; }
+  .track { background: var(--dim); height: 0.7rem; position: relative; }
+  .fill { background: var(--ink); height: 100%; width: 0; }
+
+  .pose {
+    display: flex;
+    align-items: baseline;
+    gap: 0.75rem;
+    margin-top: 1rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--dim);
+  }
+  .pose .label { color: var(--muted); }
+  .pose .name { font-size: 1.5rem; font-weight: 700; letter-spacing: 0.15em; }
+  .hint { color: var(--muted); font-size: 0.85rem; }
+  .warn { color: #8a2b2b; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>MOCKHAND</h1>
+  <span class="state" id="state">연결 중</span>
+</header>
+
+<!-- 손등에서 본 오른손. 손가락은 flex 0.0(폄)~1.0(굽힘) 으로 회전한다.
+     각도가 아니라 flex 를 그린다 — 캘리브레이션에 의존하지 않기 위해서다. -->
+<svg viewBox="0 0 320 340" role="img" aria-labelledby="svgTitle">
+  <title id="svgTitle">Mock 손 상태</title>
+
+  <!-- 손바닥 -->
+  <path class="palm" d="M95 250 L95 175 Q95 160 110 160 L215 160 Q230 160 230 175 L230 250 Q230 275 205 275 L120 275 Q95 275 95 250 Z"/>
+
+  <!-- 손가락 네 개: 각 그룹은 밑동에서 회전한다 -->
+  <g id="g-index"  transform-origin="120 165"><path class="bone" d="M120 165 L120 70"/></g>
+  <g id="g-middle" transform-origin="155 165"><path class="bone" d="M155 165 L155 55"/></g>
+  <g id="g-ring"   transform-origin="190 165"><path class="bone" d="M190 165 L190 70"/></g>
+  <g id="g-pinky"  transform-origin="222 172"><path class="bone" d="M222 172 L222 95"/></g>
+
+  <!-- 엄지: 손 옆으로 뻗어 있어 회전 중심과 방향이 다르다 -->
+  <g id="g-thumb"  transform-origin="98 245"><path class="bone" d="M98 245 L40 195"/></g>
+</svg>
+
+<div class="readout">
+  <table id="values"></table>
+
+  <div class="pose">
+    <span class="label">자세</span>
+    <span class="name" id="poseName">···</span>
+    <span class="hint" id="poseHint"></span>
+  </div>
+  <p class="hint" id="notice"></p>
+</div>
+
+<script>
+"use strict";
+
+// 손가락별 최대 회전각(도). flex 1.0 일 때의 값이다.
+// **서보 각도가 아니다.** 화면에서 굽힘이 알아보이게 하는 표시용 상수이며,
+// poses.json 의 캘리브레이션과 무관하다 (DECISIONS.md §41).
+const SWEEP_DEG = {
+  thumb: -70,   // 엄지는 손바닥 쪽으로 접힌다 (반대 방향)
+  index: 88,
+  middle: 92,
+  ring: 88,
+  pinky: 80,
+};
+
+// flex 가 이 안에서 일치하면 같은 자세로 본다. 보간 중간값을 자세로
+// 오인하지 않을 만큼 좁게 잡는다.
+const POSE_EPSILON = 0.001;
+
+const el = (id) => document.getElementById(id);
+const state = { fingers: [], table: {}, revealed: false, current: null };
+
+// --------------------------------------------------------------------- //
+// 그리기
+// --------------------------------------------------------------------- //
+
+function render(flex) {
+  for (const finger of state.fingers) {
+    const value = flex[finger];
+    if (value === undefined) continue;
+
+    const group = el("g-" + finger);
+    if (group) {
+      group.setAttribute("transform", `rotate(${value * SWEEP_DEG[finger]})`);
+    }
+    const cell = el("v-" + finger);
+    if (cell) cell.textContent = value.toFixed(2);
+    const bar = el("b-" + finger);
+    if (bar) bar.style.width = `${Math.round(value * 100)}%`;
+  }
+}
+
+function buildTable(fingers) {
+  const table = el("values");
+  table.innerHTML = "";
+  for (const finger of fingers) {
+    const row = document.createElement("tr");
+    row.innerHTML = `
+      <th>${finger}</th>
+      <td class="value" id="v-${finger}">0.00</td>
+      <td><div class="track"><div class="fill" id="b-${finger}"></div></div></td>
+    `;
+    table.appendChild(row);
+  }
+}
+
+// --------------------------------------------------------------------- //
+// 자세 되짚기
+// --------------------------------------------------------------------- //
+
+/**
+ * 지금 flex 가 어느 자세와 정확히 같은지 찾는다.
+ *
+ * 서버에게 "지금 무슨 글자냐"고 묻지 않는다. flex 에서 되짚어야 flex 와
+ * 자세 표가 맞는지 확인하는 셈이 되고, 그것이 이 화면의 목적이다.
+ * 보간 중에는 어느 자세와도 같지 않으므로 null 이 나온다 — 맞는 동작이다.
+ */
+function identify(flex) {
+  for (const [name, pose] of Object.entries(state.table)) {
+    let same = true;
+    for (const finger of state.fingers) {
+      if (Math.abs((flex[finger] ?? 0) - pose[finger]) > POSE_EPSILON) {
+        same = false;
+        break;
+      }
+    }
+    if (same) return name;
+  }
+  return null;
+}
+
+function showPose(flex, busy) {
+  const found = identify(flex);
+  state.current = found;
+
+  if (!state.revealed) {
+    el("poseName").textContent = found ? "•" : "···";
+    el("poseHint").textContent = found ? "" : "이동 중";
+    return;
+  }
+  el("poseName").textContent = found ?? "···";
+  el("poseHint").textContent = found ? "" : (busy ? "이동 중" : "자세 표에 없음");
+}
+
+// 기본은 숨김이다. 발표 폴백으로 쓸 때 이 화면을 학습자가 보게 되므로
+// 글자를 띄우면 정답 공개가 된다 (DECISIONS.md §41).
+function applyReveal() {
+  el("notice").textContent = state.revealed
+    ? "자세 이름 표시 중 — 발표 폴백으로 쓸 때는 L 로 다시 끌 것"
+    : "L: 자세 이름 표시";
+  el("notice").className = state.revealed ? "hint warn" : "hint";
+}
+
+function toggleReveal() {
+  state.revealed = !state.revealed;
+  applyReveal();
+}
+
+// --------------------------------------------------------------------- //
+// 연결 — 읽기만 한다. 이 화면에서 손을 움직일 수단은 없다.
+// --------------------------------------------------------------------- //
+
+function connect() {
+  const scheme = location.protocol === "https:" ? "wss" : "ws";
+  const socket = new WebSocket(`${scheme}://${location.host}/ws/device`);
+
+  socket.onopen = () => {
+    el("state").textContent = "연결됨";
+    el("state").className = "state live";
+  };
+
+  socket.onmessage = (event) => {
+    const message = JSON.parse(event.data);
+
+    if (message.type === "unavailable") {
+      el("state").textContent = "사용 불가";
+      el("state").className = "state";
+      el("notice").className = "hint warn";
+      el("notice").textContent =
+        `${message.reason}: ${message.detail}. 실기에서는 실물을 보세요.`;
+      return;
+    }
+
+    if (message.type === "hello") {
+      state.fingers = message.fingers;
+      // 중립·안전도 이름으로 보여 준다. 글자는 아니지만 확인해야 할 자세다.
+      state.table = { ...message.poses, 중립: message.neutral, 안전: message.safe };
+      buildTable(state.fingers);
+      return;
+    }
+
+    if (message.type === "flex") {
+      render(message.flex);
+      showPose(message.flex, message.busy);
+    }
+  };
+
+  socket.onclose = () => {
+    el("state").textContent = "끊김 — 새로고침";
+    el("state").className = "state";
+  };
+}
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "l" || e.key === "L") toggleReveal();
+});
+
+applyReveal();   // 기본은 숨김
+connect();
+</script>
+</body>
+</html>

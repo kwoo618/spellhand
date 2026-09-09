@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from server.db import TRACK_DISCRIMINATION, TRACK_WORD, Database
+from server.device import DeviceAdapter
 from server.device.mock import MockDevice
 from server.routes import build_station, create_app
 from tests.conftest import REAL_POSES, REAL_WORDS
@@ -475,3 +476,125 @@ def test_presentation_really_runs_on_a_background_thread(config, clock):
         assert kinds[0] == "presenting"
         assert kinds[-1] == "done"
         assert station.controllers[sid].state == "awaiting_answer"
+
+
+# --------------------------------------------------------------------------- #
+# mockhand — Mock 디바이스 보기 (PRD 6.3)
+# --------------------------------------------------------------------------- #
+
+def test_the_flex_feed_opens_without_a_session(client, station):
+    """세션 없이도 열려야 한다. 디바이스만 두드려 보는 개발 중에도 쓴다."""
+    with client.websocket_connect("/ws/device") as ws:
+        hello = ws.receive_json()
+        assert hello["type"] == "hello"
+        assert hello["fingers"] == list(station.config.fingers)
+        assert set(hello["poses"]) == set(station.config.poses)
+        assert hello["neutral"] == dict(station.config.neutral)
+        assert hello["safe"] == dict(station.config.safe)
+
+        first = ws.receive_json()
+        assert first["type"] == "flex"
+        assert first["flex"] == dict(station.device.current_flex())
+
+    # 세션은 하나도 만들어지지 않았다.
+    assert station.controllers == {}
+
+
+def test_the_flex_feed_follows_the_device(client, station, config):
+    """손이 움직이면 값이 따라온다."""
+    with client.websocket_connect("/ws/device") as ws:
+        ws.receive_json()  # hello
+        before = ws.receive_json()["flex"]
+
+        from server.device import Pose
+
+        station.device.move_to(
+            Pose.from_config(config, config.poses["I"]), 900, 800
+        )
+        after = ws.receive_json()["flex"]
+
+    assert before == dict(config.safe)
+    assert after == dict(config.poses["I"])
+
+
+def test_the_flex_feed_carries_no_letter(client, station, config):
+    """서버는 자세 이름을 얹지 않는다. 어느 자세인지는 클라이언트가 되짚는다."""
+    with client.websocket_connect("/ws/device") as ws:
+        hello = ws.receive_json()
+        sample = ws.receive_json()
+
+    assert set(sample) == {"type", "flex", "busy"}
+    assert "letter" not in sample and "letters" not in sample
+    # 자세 표는 hello 로 한 번만 간다.
+    assert "poses" in hello
+
+
+class StubDevice(DeviceAdapter):
+    """실기 자리를 채우는 최소 어댑터. `current_flex` 가 없다.
+
+    실제 포트를 열지 않고 "Mock 이 아닌 디바이스" 상황만 만든다.
+    """
+
+    def connect(self): pass
+    def disconnect(self): pass
+    @property
+    def is_busy(self): return False
+    def move_to(self, pose, transition_ms, hold_ms): pass
+    def neutral(self): pass
+    def safe(self): pass
+    def stop(self): pass
+
+
+def test_the_flex_feed_is_mock_only(config, clock):
+    """실기 모드에서는 열리지 않는다. 실기는 실물을 보면 된다."""
+    station = build_station(
+        config_path=REAL_POSES,
+        words_path=REAL_WORDS,
+        database=Database.in_memory(),
+        device=StubDevice(),
+        device_mode="serial",
+        clock=clock,
+        background=lambda work: work(),
+    )
+
+    with TestClient(create_app(station)) as client:
+        with client.websocket_connect("/ws/device") as ws:
+            message = ws.receive_json()
+
+    assert message["type"] == "unavailable"
+    assert message["reason"] == "MOCK_ONLY"
+    assert "serial" in message["detail"]
+
+
+def test_mockhand_page_is_served(client):
+    response = client.get("/mockhand.html")
+    assert response.status_code == 200
+    assert "text/html" in response.headers["content-type"]
+
+
+def test_mockhand_has_no_drive_controls(client):
+    """읽기 전용이다. 여기서 손을 움직일 수단을 만들지 않는다 —
+    구동 경로가 늘면 안전 게이트를 통과시켜야 할 곳이 늘어난다."""
+    body = client.get("/mockhand.html").text
+    for forbidden in ("/present", "/api/sessions", "/answer", "/device/stop", "<button"):
+        assert forbidden not in body, forbidden
+    assert 'method: "POST"' not in body and "fetch(" not in body
+
+
+def test_mockhand_uses_no_framework(client):
+    body = client.get("/mockhand.html").text
+    assert "<script src=" not in body
+    for forbidden in ("react", "vue", "d3", "three.js", "cdn."):
+        assert forbidden not in body.lower(), forbidden
+
+
+def test_mockhand_hides_the_pose_name_by_default(client):
+    """발표 폴백으로 쓸 때 학습자가 보는 화면이다. 기본은 숨김 (DECISIONS §41)."""
+    body = client.get("/mockhand.html").text
+    assert "revealed: false" in body
+    assert "applyReveal();   // 기본은 숨김" in body
+
+
+def test_practice_does_not_link_to_mockhand(client):
+    """제품 기능이 아니다. 학습자 뷰에 노출하지 않는다 (PRD 6.3)."""
+    assert "mockhand" not in client.get("/practice.html").text
