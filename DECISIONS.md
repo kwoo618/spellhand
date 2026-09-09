@@ -1258,7 +1258,7 @@ case 'Z': /* 상태를 보지 않는다 */ reply("ACK", NO_SEQ); moveToSafe(NO_S
 상태에서** `stop()` 을 부르고 포트에 `Z` 가 실제로 쓰였는지 본다. 완화하지
 않는다.
 
-### 남은 것 — 취소된 이동의 뒤처리 (미해결)
+### 남은 것 — 취소된 이동의 뒤처리 (해결됨. 아래 "뒤처리" 참조)
 
 `Z` 로 이동을 끊으면 진행 중이던 `move_to` 는 `RDY <seq>` 를 기다리다가
 `ACK -1` 을 읽고 `DeviceProtocolError` 를 던진다. 실기 확인에서 그대로
@@ -1292,6 +1292,115 @@ DeviceProtocolError: expected RDY for 'P 1788930812 ...' but the firmware said '
 - 취소를 나타내는 예외 타입을 두고 `Z` 이후의 `-1` 응답을 그것으로 올린다
 - 취소 시 응답 찌꺼기를 정리하는 주체를 정한다
 - `MockDevice` 의 취소된 이동도 같은 예외를 던지게 한다
+
+### 뒤처리 — 예상한 그대로 터졌다
+
+후속 작업을 미룬 사이 실기 세션에서 그대로 나왔다.
+
+```
+[INTERNAL] expected ACK for 'P 1788934150 700 0 0 0 1000 900 2167'
+          but the firmware said 'RDY -1'
+[LOCK_UNAVAILABLE] device is held by session 24 ... session 25 cannot acquire it
+```
+
+앞 세션의 `Z` 가 남긴 `RDY -1` 을 다음 `P` 의 ACK 자리에서 읽었고, 그 예외로
+세션이 죽으면서 락이 반납되지 않아 다음 세션이 시작조차 못 했다. 네 가지를
+고쳤다.
+
+**1. `-1` 응답을 일반 응답과 구분한다.** `seq` 가 `-1` 인 것은 `P` 에 딸린
+응답이 아니다(`Z`, `N`, 유휴 복귀). `_await()` 는 `seq` 있는 명령을 기다리는
+중에 `-1` 을 만나면 태그가 맞아도 받아들이지 않는다.
+
+- 정지가 걸린 상태였으면 `DeviceCancelledError` 로 올린다
+- 아니면 **경고를 남기고** 버리고 계속 읽는다. 조용히 삼키지 않는다 —
+  찌꺼기가 남는다는 것 자체가 어딘가 잘못됐다는 신호다
+
+**2. 찌꺼기를 비우는 주체는 구동 중이던 스레드다.** `stop()` 은 busy 일 때
+포트를 읽지 않는다(한 포트를 두 스레드가 읽을 수 없다). 대신
+`DeviceCancelledError` 를 받은 `_run()` 이 `_drain_stop_response()` 로 `Z` 의
+응답을 마저 비우고 예외를 다시 올린다. `DON -1` 이 오지 않으면 경고를 남긴다.
+
+**3. `DeviceCancelledError` 는 통신 오류가 아니다.** `DeviceError` 를 상속하되
+`DeviceProtocolError` 와 형제다. 상위 계층이 둘을 다르게 다룬다 —
+`Station.run_in_background` 는 취소면 `STOPPED` 만 알리고 **세션과 락을 그대로
+두고**, 그 밖의 실패면 `DEVICE_FAILED`(또는 `INTERNAL`)를 알린 뒤 세션을
+`aborted` 로 닫는다.
+
+**4. `MockDevice` 를 Serial 에 맞췄다.** 취소된 이동이 예외를 던진다. 위에
+적은 대로 조용히 성공하는 쪽이 틀렸기 때문이다.
+
+### 락은 예외 경로에서도 반납된다
+
+관측된 두 번째 증상이다. 락을 놓지 못하는 경로가 세 군데 있었다.
+
+| 경로 | 무엇이 문제였나 |
+|---|---|
+| `Station.run_in_background` | `DeviceError` 가 `except Exception` 으로 떨어져 `INTERNAL` 만 알리고 스레드가 끝났다. 컨트롤러도 `station.controllers` 에 남아 브라우저 heartbeat 가 죽은 락을 계속 살려 냈다 |
+| `SessionController.start()` | 락을 잡은 **뒤** 난이도 복원·예산 계산이 실패하면, 호출자가 `session_id` 를 받지 못해 끝낼 방법이 없다 |
+| `SessionController.end()` | `_ended = True` 가 `device.safe()` **뒤에** 있었다. 안전 자세로 가지 못하면 세션이 닫히지 않은 것으로 남았다 |
+
+셋 다 고쳤다. `Station.abort_session()` 이 정리 창구다 — 컨트롤러를 떼어 내고
+`end(status="aborted")` 로 닫되, **그 정리가 또 실패해도 `finally` 에서 락을
+놓는다.** 여기까지 온 것은 이미 무언가 잘못된 상황이고, 여기서 또 멈추면 다음
+학습자가 시작조차 못 한다.
+
+`SessionRunner.run()` 의 정리 실패도 원인을 가리지 않게 했다. 예전에는
+`end()` 가 던진 `DeviceNotConnectedError` 가 진짜 원인을 덮었다.
+
+회귀 테스트는 가짜 시계로 돈다. **만료로 풀릴 길이 없으므로 명시적으로 놓아야만
+통과한다** (R4, 완화 금지):
+
+- `test_the_lock_is_released_when_a_move_fails_mid_session`
+- `test_the_lock_is_released_when_the_hand_cannot_be_parked`
+- `test_a_failed_start_does_not_leave_the_lock_held`
+- `test_a_device_failure_during_a_move_releases_the_lock`
+- `test_a_failure_while_closing_still_releases_the_lock`
+- `test_a_cancelled_move_keeps_the_session_alive` — 취소는 **놓지 않는다**
+
+### 재시도는 넣지 않았다
+
+찌꺼기를 읽었을 때 "다시 보내 본다" 를 넣으면 손이 예상 못 한 시점에 두 번
+움직인다. 학습자 앞에서 그것은 오작동으로 보인다. 어긋난 것은 버리고 알리는
+데서 끝낸다.
+
+락 만료 시간도 줄이지 않았다. 만료를 짧게 하는 것은 원인을 고치지 않고 증상이
+빨리 사라지게 하는 것이고, 느린 재생 문항(7글자)이 정상적으로 만료를 넘기게
+된다 (§25).
+
+
+---
+
+## 44. 세션 강제 종료 경로 (`POST /api/device/reset`)
+
+**§42 수정의 대체가 아니라 보조다.** 원인을 고치는 것이 먼저고, 이것은 시연
+중에 서버를 껐다 켤 수 없어서 두는 마지막 수단이다.
+
+락이 물리는 경로를 §42 에서 셋 막았지만, 막지 못한 것이 남아 있을 수 있다 —
+프로세스가 `SIGKILL` 로 죽거나, 브라우저가 열린 채 세션이 붕 뜨거나. 그때
+서버 재시작 말고 다른 수단이 없으면 시연이 끝난다.
+
+- 활성 세션을 `aborted` 로 닫고, 락을 놓고, 손을 안전 자세로 되돌린다
+- 컨트롤러가 사라졌는데 락만 남은 경우도 처리한다 (`lock.holder()` 로 찾는다)
+- 어느 단계가 실패해도 나머지를 계속한다. 이 경로 자체가 "무언가 잘못됐을 때"
+  부르는 것이라 여기서 또 멈추면 쓸모가 없다
+
+### 기록은 남는다
+
+`aborted` 로 닫을 뿐, 답한 문항의 `items` 행과 난이도(`learner_difficulty`)는
+지우지 않는다. 중단 세션과 같은 취급이다 (§39). 난이도는 `submit()` 마다
+저장되므로 강제 종료 시점에 따로 할 일이 없다.
+
+### 확인 절차 — 두 번 누르기
+
+`practice.html` 아래쪽 회색 밑줄 링크다. 학습 흐름의 일부가 아니므로 눈에 띄지
+않는 자리에 둔다. 한 번 누르면 빨간 글씨로 바뀌며 무엇이 날아가는지 알리고,
+8초 안에 다시 눌러야 실행된다. 시간이 지나면 없던 일이 된다.
+
+`confirm()` 을 쓰지 않았다. 모달은 페이지를 붙잡고, 시연 중에 그것이 뜨면
+다른 조작이 전부 막힌다.
+
+`/api/device/stop`(비상 정지)과 별개다. 정지는 손만 멈추고 세션은 살려 두며,
+해제는 세션을 끝낸다.
 
 
 ---

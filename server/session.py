@@ -460,19 +460,29 @@ class SessionController:
             learner_name, self._plan, source
         )
         self._lock.acquire(session_id)
-        self._session_id = session_id
-        self._learner_id = learner_id
+        # 락을 잡은 다음부터는 실패해도 놓고 나가야 한다. 여기서 예외가 나면
+        # 호출자는 session_id 를 받지 못해 이 세션을 끝낼 방법이 없고, 락은
+        # 만료(60초)까지 남는다 (DECISIONS.md §42).
+        try:
+            self._session_id = session_id
+            self._learner_id = learner_id
 
-        self._schedule = [TRACK_DISCRIMINATION] * self._plan.discrimination_items
-        self._schedule += [TRACK_WORD] * self._plan.word_items
-        self._difficulty = {
-            track: self._restore_difficulty(learner_id, track) for track in TRACKS
-        }
-        # heavy_letters 비율은 세션 전체 문항 수 기준이다 (DECISIONS §19).
-        self._heavy_caps = heavy_letter_caps(
-            self._config, self._plan.discrimination_items
-        )
-        self._heavy_used = {letter: 0 for letter in self._heavy_caps}
+            self._schedule = [TRACK_DISCRIMINATION] * self._plan.discrimination_items
+            self._schedule += [TRACK_WORD] * self._plan.word_items
+            self._difficulty = {
+                track: self._restore_difficulty(learner_id, track)
+                for track in TRACKS
+            }
+            # heavy_letters 비율은 세션 전체 문항 수 기준이다 (DECISIONS §19).
+            self._heavy_caps = heavy_letter_caps(
+                self._config, self._plan.discrimination_items
+            )
+            self._heavy_used = {letter: 0 for letter in self._heavy_caps}
+        except Exception:
+            self._lock.release(session_id)
+            self._close_session(session_id, status="aborted")
+            self._ended = True
+            raise
         self._state = (
             SessionState.FINISHED
             if not self._schedule
@@ -733,11 +743,15 @@ class SessionController:
             if status is None:
                 status = "done" if self.finished else "aborted"
             self._close_session(session_id, status=status)
+            # 여기서부터 되돌아오지 않는다. 아래 정리가 실패해도 세션은 닫혔고,
+            # 두 번째 end() 가 같은 일을 다시 하면 안 된다.
+            self._ended = True
             try:
                 self._device.safe()
             finally:
+                # 손이 안전 자세로 가지 못했더라도 락은 놓는다. 쥔 채로 두면
+                # 다음 학습자가 시작조차 못 한다 (DECISIONS.md §42).
                 self._lock.release(session_id)
-            self._ended = True
         self._state = SessionState.FINISHED
         summary = self._summarize(
             session_id, self.learner_id, tuple(self._outcomes)
@@ -1013,7 +1027,12 @@ class SessionRunner:
                 answer = answer_provider(prompt, controller._active_answer())
                 controller.submit(answer)
         except Exception:
-            controller.end(status="aborted")
+            try:
+                controller.end(status="aborted")
+            except Exception:  # noqa: BLE001 - 원인을 가리지 않는다
+                # 정리(안전 자세)까지 실패한 경우다. 락은 end() 안에서 이미
+                # 놓았다. 여기서 이 예외를 올리면 진짜 원인이 묻힌다.
+                logger.exception("could not close the session cleanly")
             raise
         return controller.end(status="done")
 

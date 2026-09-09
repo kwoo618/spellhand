@@ -30,6 +30,7 @@ from server.device import (
     FIRMWARE_ERRORS,
     CalibrationMismatchError,
     DeviceAdapter,
+    DeviceCancelledError,
     DeviceBusyError,
     DeviceError,
     DeviceNotConnectedError,
@@ -106,6 +107,8 @@ class SerialDevice(DeviceAdapter):
         self._busy = False
         self._seq = 0
         self._arrival_at: Optional[datetime] = None
+        # 비상 정지가 걸렸는가. 진행 중인 명령이 이것을 보고 물러난다.
+        self._cancelled = False
 
     # ------------------------------------------------------------------ #
     # 연결
@@ -239,27 +242,40 @@ class SerialDevice(DeviceAdapter):
         여기서도 상태를 볼 이유가 없다.
         """
         self._require_connected()
+        # 진행 중인 명령이 "취소됐다"를 알 수 있도록 먼저 세운다.
+        self._cancelled = True
         self._write("Z")
 
         if self._busy:
-            # 진행 중인 호출자가 이 응답들을 읽는다. 여기서 같이 읽으면
+            # 진행 중인 호출자가 이 응답들을 읽고 비운다. 여기서 같이 읽으면
             # 한 포트를 두 스레드가 읽게 된다.
             return
         self._drain_stop_response()
+        self._cancelled = False
 
     def _drain_stop_response(self) -> None:
-        """`Z` 의 응답(ACK/RDY/DON)을 비운다.
+        """`Z` 의 응답(ACK/RDY/DON, 모두 seq -1)을 `DON` 까지 비운다.
 
         비우지 않으면 다음 명령의 `_await` 가 남은 줄을 먼저 읽어 seq 가
-        어긋난다. 응답이 오지 않아도 더 할 일은 없다 — 손은 이미 `Z` 를 받았다.
+        어긋난다. 실기 세션에서 실제로 그렇게 깨졌다 (DECISIONS.md §42).
+        응답이 오지 않아도 더 할 일은 없다 — 손은 이미 `Z` 를 받았다.
         """
         deadline = self._clock() + timedelta(milliseconds=self._ack_timeout_ms)
         while True:
             line = self._read_line(deadline)
             if line is None:
+                logger.warning(
+                    "no DON for the stop on %s within %dms; the port may still "
+                    "hold unread lines",
+                    self._port,
+                    self._ack_timeout_ms,
+                )
                 return
             if _split(line)[0] == "DON":
                 return
+            # DON 앞에 온 줄들(ACK/RDY -1)은 버린다. 버렸다는 것은 남긴다 —
+            # 여기에 seq 있는 응답이 섞여 나오면 그것은 알아야 할 일이다.
+            logger.debug("draining %r while clearing the stop response", line)
 
     # ------------------------------------------------------------------ #
     # 프로토콜
@@ -282,6 +298,7 @@ class SerialDevice(DeviceAdapter):
             )
 
         self._busy = True
+        self._cancelled = False
         try:
             self._write(command)
             self._await(command, seq, "ACK", self._ack_timeout_ms)
@@ -292,7 +309,14 @@ class SerialDevice(DeviceAdapter):
             self._await(
                 command, seq, "DON", hold_ms + self._response_grace_ms
             )
+        except DeviceCancelledError:
+            # 정지가 걸렸다. `Z` 의 응답을 **이 스레드가** 마저 비운다 —
+            # 남겨 두면 다음 명령이 그것을 먼저 읽어 seq 가 어긋난다
+            # (DECISIONS.md §42). stop() 은 포트를 읽지 않는다.
+            self._drain_stop_response()
+            raise
         finally:
+            self._cancelled = False
             self._busy = False
 
     def _write(self, command: str) -> None:
@@ -321,6 +345,23 @@ class SerialDevice(DeviceAdapter):
             kind, parts = _split(line)
             if kind == "ERR":
                 raise self._firmware_error(command, parts)
+
+            # seq 없는 명령(Z, N)의 응답은 -1 로 온다. 지금 기다리는 것이
+            # seq 있는 명령이라면, -1 응답은 정지가 끼어들었다는 뜻이다.
+            if seq != NO_SEQ and _seq_of(parts) == NO_SEQ:
+                if self._cancelled:
+                    raise DeviceCancelledError(
+                        f"{command!r} was cancelled by a stop before {tag}"
+                    )
+                # 정지를 건 적이 없는데 -1 이 왔다. 앞선 명령의 찌꺼기다.
+                # 조용히 넘기지 않고 남긴 뒤 계속 기다린다.
+                logger.warning(
+                    "discarding a stray %s -1 while waiting for %s of %r; "
+                    "a previous stop left it unread",
+                    kind, tag, command,
+                )
+                continue
+
             if kind == tag:
                 self._expect_seq(command, tag, seq, parts)
                 return
@@ -415,3 +456,13 @@ _TRANSPORT_READ_TIMEOUT_S = 0.05
 def _split(line: str):
     parts = line.split()
     return (parts[0] if parts else ""), parts[1:]
+
+
+def _seq_of(parts: List[str]) -> Optional[int]:
+    """응답에 실린 seq. 숫자가 아니면 None."""
+    if not parts:
+        return None
+    try:
+        return int(parts[0])
+    except ValueError:
+        return None

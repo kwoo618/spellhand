@@ -11,7 +11,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from server.db import TRACK_DISCRIMINATION, TRACK_WORD, Database
-from server.device import DeviceAdapter
+from server.device import (
+    DeviceAdapter,
+    DeviceCancelledError,
+    DeviceProtocolError,
+)
 from server.device.mock import MockDevice
 from server.routes import build_station, create_app
 from tests.conftest import REAL_POSES, REAL_WORDS
@@ -314,6 +318,185 @@ def test_demo_replay_is_refused_before_a_demo_exists(client, station):
     response = client.post(f"/api/sessions/{sid}/demo")
     assert response.status_code == 409
     assert response.json()["code"] == "SESSION_STATE"
+
+
+# --------------------------------------------------------------------------- #
+# 구동 중 실패와 락 반납 (DECISIONS.md §42)
+# --------------------------------------------------------------------------- #
+
+class BreakingDevice(MockDevice):
+    """지정한 예외를 `move_to` 에서 던지는 Mock.
+
+    실기에서 실제로 난 실패를 재현한다 — 앞선 `Z` 의 응답이 버퍼에 남아
+    다음 `P` 의 ACK 자리에서 읽히는 상황이다.
+    """
+
+    def __init__(self, config, error, **kwargs):
+        super().__init__(config, **kwargs)
+        self._error = error
+        self.moves = 0
+
+    def move_to(self, pose, transition_ms, hold_ms):
+        self.moves += 1
+        raise self._error
+
+
+def breaking_station(config, clock, error):
+    return build_station(
+        config_path=REAL_POSES,
+        words_path=REAL_WORDS,
+        database=Database.in_memory(),
+        device=BreakingDevice(config, error, sleep=clock.sleep),
+        clock=clock,
+        background=lambda work: work(),
+    )
+
+
+def test_a_device_failure_during_a_move_releases_the_lock(config, clock):
+    """R4: 구동 중 예외가 나도 락은 반납된다.
+
+    실기에서 이것이 풀리지 않아 다음 세션이 `LOCK_UNAVAILABLE` 로 시작조차
+    하지 못했다 (DECISIONS.md §42). 가짜 시계라 만료로 풀릴 길은 없다 —
+    명시적으로 놓아야만 통과한다.
+    """
+    station = breaking_station(
+        config, clock, DeviceProtocolError("expected ACK, got 'RDY -1'")
+    )
+    with TestClient(create_app(station)) as client:
+        session = start(client)
+        sid = session["session_id"]
+        assert station.lock.holder() == sid
+
+        client.get(f"/api/sessions/{sid}/next")
+        client.post(f"/api/sessions/{sid}/present")
+
+        assert station.lock.holder() is None, "구동 실패가 락을 물고 있다"
+        assert sid not in station.controllers
+
+        # 그리고 다음 세션이 곧바로 시작된다.
+        assert client.post(
+            "/api/sessions", json={"learner_name": "nari", **SMALL_PLAN}
+        ).status_code == 201
+
+
+def test_a_device_failure_is_reported_before_the_session_is_closed(config, clock):
+    """조용히 접지 않는다. 무엇이 실패했는지가 먼저 나간다."""
+    station = breaking_station(config, clock, DeviceProtocolError("boom"))
+    events = []
+    with TestClient(create_app(station)) as client:
+        session = start(client)
+        sid = session["session_id"]
+        client.get(f"/api/sessions/{sid}/next")
+        station.hub.publish = lambda session_id, event: events.append(event)
+        client.post(f"/api/sessions/{sid}/present")
+
+    failures = [e for e in events if e["type"] == "error"]
+    assert [e["code"] for e in failures] == ["DEVICE_FAILED"]
+    assert "boom" in failures[0]["detail"]
+    # 실패가 먼저 나가고 그다음에 세션이 닫힌다.
+    assert events.index(failures[0]) < len(events) - 1
+    assert events[-1]["type"] == "ended"
+
+
+def test_a_cancelled_move_keeps_the_session_alive(config, clock):
+    """정지는 통신 오류가 아니다. 락도 세션도 그대로 두고, 다음 문항으로 간다."""
+    station = breaking_station(
+        config, clock, DeviceCancelledError("cancelled by a stop before RDY")
+    )
+    events = []
+    with TestClient(create_app(station)) as client:
+        session = start(client)
+        sid = session["session_id"]
+        client.get(f"/api/sessions/{sid}/next")
+        station.hub.publish = lambda session_id, event: events.append(event)
+        client.post(f"/api/sessions/{sid}/present")
+
+        assert station.lock.holder() == sid, "사람이 멈춘 것으로 락을 놓지 않는다"
+        assert sid in station.controllers
+        assert [e["code"] for e in events if e["type"] == "error"] == ["STOPPED"]
+
+        # 세션은 살아 있다 — 같은 문항을 다시 보여 달라고 할 수 있다.
+        assert client.post(f"/api/sessions/{sid}/present").status_code == 202
+
+
+def test_a_failure_while_closing_still_releases_the_lock(config, clock):
+    """정리 중에 손이 또 실패해도 락은 놓는다.
+
+    `end()` 는 안전 자세로 보내려 한다. 그것마저 실패하는 것이 실기의
+    현실적인 경우다 — 포트가 이미 죽었기 때문이다.
+    """
+    station = breaking_station(config, clock, DeviceProtocolError("boom"))
+
+    def always_fails() -> None:
+        raise DeviceProtocolError("the port is gone")
+
+    station.device.safe = always_fails  # type: ignore[method-assign]
+
+    with TestClient(create_app(station)) as client:
+        session = start(client)
+        sid = session["session_id"]
+        client.get(f"/api/sessions/{sid}/next")
+        client.post(f"/api/sessions/{sid}/present")
+
+        assert station.lock.holder() is None
+        assert sid not in station.controllers
+
+
+# --------------------------------------------------------------------------- #
+# 강제 해제
+# --------------------------------------------------------------------------- #
+
+def test_reset_ends_the_running_session_and_releases_the_lock(client, station):
+    session = start(client)
+    sid = session["session_id"]
+    client.get(f"/api/sessions/{sid}/next")
+
+    response = client.post("/api/device/reset")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ended_sessions"] == [sid]
+    assert body["lock_holder"] is None
+
+    assert station.lock.holder() is None
+    assert sid not in station.controllers
+
+
+def test_reset_records_the_session_as_aborted(client, station):
+    """답한 문항까지의 기록은 남는다. 중단 세션과 같은 취급이다 (§39)."""
+    from server.db import TrainingSession
+
+    session = start(client)
+    sid = session["session_id"]
+    client.get(f"/api/sessions/{sid}/next")
+    client.post(f"/api/sessions/{sid}/present")
+    answer_correctly(client, station, sid)
+
+    client.post("/api/device/reset")
+
+    with station.database.session() as db:
+        row = db.get(TrainingSession, sid)
+        assert row.status == "aborted"
+        assert row.ended_at is not None
+
+    stats = client.get(f"/api/stats/learners/{session['learner_id']}").json()
+    assert stats["by_track"][TRACK_DISCRIMINATION]["answered"] == 1
+
+
+def test_reset_releases_a_lock_whose_controller_is_gone(client, station):
+    """서버는 살아 있는데 컨트롤러만 사라진 경우. 락만 놓는다."""
+    session = start(client)
+    sid = session["session_id"]
+    station.controllers.pop(sid)
+
+    body = client.post("/api/device/reset").json()
+    assert body["ended_sessions"] == [sid]
+    assert station.lock.holder() is None
+
+
+def test_reset_is_harmless_when_nothing_is_held(client, station):
+    body = client.post("/api/device/reset").json()
+    assert body["ended_sessions"] == []
+    assert body["lock_holder"] is None
 
 
 # --------------------------------------------------------------------------- #

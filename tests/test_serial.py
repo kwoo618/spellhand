@@ -15,6 +15,7 @@ from server.calibration import calibration_hash
 from server.device import (
     CalibrationMismatchError,
     DeviceBusyError,
+    DeviceCancelledError,
     DeviceConfigError,
     DeviceNotConnectedError,
     DeviceProtocolError,
@@ -601,6 +602,136 @@ def test_stop_while_idle_clears_its_own_response(config, clock):
 
     assert port.drive_commands[0] == "Z"
     assert port.drive_commands[1].startswith("P 1001 ")
+
+
+# --------------------------------------------------------------------------- #
+# 응답 찌꺼기 (DECISIONS.md §42)
+# --------------------------------------------------------------------------- #
+
+def test_a_stop_during_a_move_raises_cancelled_not_a_protocol_error(config, clock):
+    """취소는 통신 오류가 아니다. 프로토콜은 멀쩡하고 사람이 멈춘 것이다."""
+    port = FakePort(
+        clock, hash_value=calibration_hash(config), script=[["ACK 1001"]]
+    )
+    device = build(config, clock, port)
+    device.connect()
+
+    original_readline = port.readline
+    stopped = []
+
+    def interrupt():
+        if not stopped and device.is_busy:
+            stopped.append(True)
+            device.stop()
+        return original_readline()
+
+    port.readline = interrupt
+
+    with pytest.raises(DeviceCancelledError):
+        device.move_to(pose_of(config, "B"), 900, 2000)
+    assert not isinstance(
+        DeviceCancelledError("x"), DeviceProtocolError
+    ), "취소를 프로토콜 오류로 분류하면 상위 계층이 둘을 구분할 수 없다"
+
+
+def test_a_cancelled_move_drains_the_stop_response(config, clock):
+    """취소된 이동이 `Z` 의 응답을 마저 비운다.
+
+    비우지 않으면 다음 `P` 가 `ACK -1` 을 자기 ACK 자리에서 읽는다. 실기
+    세션에서 실제로 이렇게 깨졌다 (DECISIONS.md §42).
+    """
+    port = FakePort(
+        clock, hash_value=calibration_hash(config), script=[["ACK 1001"]]
+    )
+    device = build(config, clock, port)
+    device.connect()
+
+    original_readline = port.readline
+    stopped = []
+
+    def interrupt():
+        if not stopped and device.is_busy:
+            stopped.append(True)
+            device.stop()
+        return original_readline()
+
+    port.readline = interrupt
+    with pytest.raises(DeviceCancelledError):
+        device.move_to(pose_of(config, "B"), 900, 2000)
+
+    port.readline = original_readline
+    assert port.pending == [], "Z 의 응답이 포트에 남아 있다"
+
+    # 그리고 다음 명령이 자기 seq 로 정상 진행한다.
+    device.move_to(pose_of(config, "W"), 900, 2000)
+    assert port.drive_commands[-1].startswith("P 1002 ")
+
+
+def test_a_leftover_minus_one_response_is_discarded_with_a_warning(
+    config, clock, caplog
+):
+    """비우지 못한 `-1` 이 남아 있어도 다음 명령이 깨지지 않는다.
+
+    **조용히 넘기지는 않는다.** 찌꺼기가 남았다는 것 자체가 어딘가 잘못됐다는
+    신호이므로 로그를 남긴다.
+    """
+    port = FakePort(
+        clock,
+        hash_value=calibration_hash(config),
+        # 앞선 Z 의 응답이 통째로 남은 채로 P 를 보낸 상황.
+        script=[
+            [
+                f"ACK {NO_SEQ}",
+                f"RDY {NO_SEQ}",
+                f"DON {NO_SEQ}",
+                "ACK 1001",
+                "RDY 1001",
+                "DON 1001",
+            ]
+        ],
+    )
+    device = build(config, clock, port)
+    device.connect()
+
+    with caplog.at_level("WARNING", logger="server.device.serial"):
+        device.move_to(pose_of(config, "B"), 900, 2000)
+
+    discarded = [r for r in caplog.records if "stray" in r.getMessage()]
+    assert len(discarded) == 3, "버린 줄마다 로그가 남아야 한다"
+    assert "a previous stop left it unread" in discarded[0].getMessage()
+
+
+def test_a_minus_one_response_does_not_satisfy_a_real_seq(config, clock):
+    """`RDY -1` 을 `P` 의 RDY 로 받아들이면 안 된다.
+
+    태그만 보면 맞지만 seq 가 다르다. 받아들이면 도달하지 않은 손을 도달한
+    것으로 치고 관찰 시간을 재기 시작한다.
+    """
+    port = FakePort(
+        clock,
+        hash_value=calibration_hash(config),
+        script=[["ACK 1001", f"RDY {NO_SEQ}"]],
+    )
+    device = build(config, clock, port)
+    device.connect()
+
+    with pytest.raises(DeviceTimeoutError):
+        # -1 은 버려지고, 진짜 RDY 는 오지 않아 타임아웃으로 끝난다.
+        device.move_to(pose_of(config, "B"), 900, 2000)
+    assert device.last_arrival_at() is None
+
+
+def test_a_wrong_real_seq_is_still_an_error(config, clock):
+    """`-1` 만 예외다. 다른 seq 는 여전히 프로토콜 오류다 (완화하지 않는다)."""
+    port = FakePort(
+        clock, hash_value=calibration_hash(config), script=[["ACK 999"]]
+    )
+    device = build(config, clock, port)
+    device.connect()
+
+    with pytest.raises(DeviceProtocolError) as exc:
+        device.move_to(pose_of(config, "B"), 900, 2000)
+    assert "reported seq 999" in str(exc.value)
 
 
 def test_stop_is_refused_only_when_disconnected(config, clock, port):

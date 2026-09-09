@@ -658,7 +658,8 @@ def generate_items(stats, count, track, target_pairs=None):
 | `POST` | `/api/agent/plans/{id}/approve` | HITL 승인 → 세션 생성 |
 | `POST` | `/api/agent/plans/{id}/reject` | 거부 |
 | `GET` | `/api/device/status` | 상태, 모드, 캘리브레이션 해시 일치 여부 |
-| `POST` | `/api/device/stop` | 비상 정지 (안전 자세) |
+| `POST` | `/api/device/stop` | 비상 정지 (안전 자세). 세션은 유지 |
+| `POST` | `/api/device/reset` | 강제 해제. 활성 세션을 `aborted` 로 닫고 락 반납 (DECISIONS §44) |
 
 ### WebSocket `/ws/session/{id}`
 

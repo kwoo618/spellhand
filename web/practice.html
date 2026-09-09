@@ -93,6 +93,19 @@
   td { font-variant-numeric: tabular-nums; }
 
   .error { color: #8a2b2b; }
+
+  /* 복구 수단. 학습 흐름의 일부가 아니므로 눈에 띄지 않는 자리에 둔다. */
+  .recovery { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+  .recovery button {
+    padding: 0.3rem 0;
+    border: 0;
+    background: none;
+    color: var(--muted);
+    font-size: 0.85rem;
+    text-decoration: underline;
+  }
+  .recovery button.armed { color: #8a2b2b; text-decoration: none; font-weight: 600; }
+  .recovery .note { display: inline; margin-left: 0.6rem; }
 </style>
 </head>
 <body>
@@ -143,6 +156,11 @@
   </section>
 
   <p class="error" id="error"></p>
+
+  <div class="recovery">
+    <button id="resetBtn" type="button">손이 잠겨 있습니다 — 강제 해제</button>
+    <span class="note" id="resetNote"></span>
+  </div>
 </main>
 
 <script>
@@ -378,7 +396,53 @@ function renderSummary(summary) {
 }
 
 // --------------------------------------------------------------------- //
+// 강제 해제
+// --------------------------------------------------------------------- //
 
+/** 진행 중인 세션이 날아간다. 한 번 눌러서는 실행되지 않는다. */
+let resetArmed = null;
+
+function disarmReset() {
+  if (resetArmed) { clearTimeout(resetArmed); resetArmed = null; }
+  el("resetBtn").classList.remove("armed");
+  el("resetBtn").textContent = "손이 잠겨 있습니다 — 강제 해제";
+  el("resetNote").textContent = "";
+}
+
+async function resetDevice() {
+  if (!resetArmed) {
+    // 1단계: 확인을 받는다. 8초 안에 다시 누르지 않으면 없던 일이 된다.
+    el("resetBtn").classList.add("armed");
+    el("resetBtn").textContent = "정말 해제합니다 — 한 번 더";
+    el("resetNote").textContent = "진행 중인 세션이 중단됩니다. 답한 문항까지는 남습니다.";
+    resetArmed = setTimeout(disarmReset, 8000);
+    return;
+  }
+
+  clearTimeout(resetArmed);
+  resetArmed = null;
+  setError("");
+  try {
+    const result = await call("POST", "/api/device/reset");
+    state.sessionId = null;
+    if (state.socket) { state.socket.close(); state.socket = null; }
+    disarmReset();
+    el("resetNote").textContent =
+      result.ended_sessions.length
+        ? `세션 ${result.ended_sessions.join(", ")} 을 중단하고 손을 놓았습니다.`
+        : "잡혀 있던 세션이 없습니다. 손을 안전 자세로 되돌렸습니다.";
+    show("trainPanel", false);
+    show("summaryPanel", false);
+    show("startPanel", true);
+  } catch (err) {
+    disarmReset();
+    setError(err.message);
+  }
+}
+
+// --------------------------------------------------------------------- //
+
+el("resetBtn").addEventListener("click", resetDevice);
 el("startBtn").addEventListener("click", startSession);
 el("name").addEventListener("keydown", (e) => { if (e.key === "Enter") startSession(); });
 el("submitBtn").addEventListener("click", submit);

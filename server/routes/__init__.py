@@ -24,7 +24,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, Tuple
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -42,6 +42,8 @@ from server.db import Database, utcnow
 from server.device import (
     DEVICE_MODE_MOCK,
     DeviceAdapter,
+    DeviceCancelledError,
+    DeviceError,
     create_device,
     resolve_device_mode,
 )
@@ -117,20 +119,82 @@ class Station:
         def guarded() -> None:
             try:
                 work()
+            except DeviceCancelledError as exc:
+                # 사람이 정지 버튼을 눌렀다. 통신도 세션도 멀쩡하므로 락을
+                # 놓지 않는다 — 학습자는 "다시 보기" 로 이어 가면 된다
+                # (DECISIONS.md §42).
+                logger.info("presentation cancelled by a stop: %s", exc)
+                self.hub.publish(
+                    session_id,
+                    {"type": "error", "code": "STOPPED", "detail": str(exc)},
+                )
             except (SafetyError, SessionError) as exc:
+                # 거부다. 아무것도 구동되지 않았고 세션은 그대로 살아 있다.
                 logger.warning("background work rejected: %s", exc)
                 self.hub.publish(
                     session_id,
                     {"type": "error", "code": exc.code, "detail": str(exc)},
                 )
             except Exception as exc:  # noqa: BLE001 - 스레드가 조용히 죽지 않게
-                logger.exception("background work failed")
+                # 예상하지 못한 실패다 — 손이 대답하지 않거나 버그다. 어느
+                # 쪽이든 이 세션은 더 못 간다. 스레드가 그냥 죽으면 락을 쥔
+                # 채로 남아 다음 세션이 만료까지 시작하지 못한다. 실제로
+                # 그렇게 됐다 (DECISIONS.md §42).
+                code = (
+                    "DEVICE_FAILED" if isinstance(exc, DeviceError) else "INTERNAL"
+                )
+                logger.exception(
+                    "background work failed; ending session %s", session_id
+                )
                 self.hub.publish(
                     session_id,
-                    {"type": "error", "code": "INTERNAL", "detail": str(exc)},
+                    {"type": "error", "code": code, "detail": str(exc)},
                 )
+                self.abort_session(session_id)
 
         self.background(guarded)
+
+    def abort_session(self, session_id: int) -> None:
+        """세션을 접고 **락을 반드시 놓는다.** 두 번 불러도 안전하다.
+
+        정리 도중 또 실패해도(손이 안전 자세로 가지 못하는 등) 락은 놓는다.
+        여기까지 온 것은 이미 무언가 잘못된 상황이고, 여기서 또 멈추면 다음
+        학습자가 시작조차 못 한다.
+        """
+        controller = self.controllers.pop(session_id, None)
+        try:
+            if controller is not None:
+                controller.end(status="aborted")
+        except Exception:  # noqa: BLE001 - 정리 실패가 락을 물게 두지 않는다
+            logger.exception("could not close session %s cleanly", session_id)
+        finally:
+            # end() 안에서도 놓지만, 그 전에 죽었을 수 있다. 보유자가 아니면
+            # release() 는 아무것도 하지 않으므로 두 번 불러도 무해하다.
+            self.lock.release(session_id)
+
+    def reset_device(self) -> Tuple[int, ...]:
+        """물린 상태를 서버 재시작 없이 푼다 (PRD 11장).
+
+        진행 중인 동작을 끊고, 이 서버가 아는 세션을 전부 aborted 로 닫고,
+        락을 놓는다. **§42 수정의 대체가 아니라 보조다** — 원인을 고치는 것이
+        먼저고, 이것은 시연 중에 서버를 껐다 켤 수 없어서 두는 마지막 수단이다.
+
+        끊긴 세션 id 들을 돌려준다.
+        """
+        try:
+            # 먼저 손을 멈춘다. 구동 중인 스레드가 이것을 보고 물러난다.
+            self.device.stop()
+        except Exception:  # noqa: BLE001 - 멈추지 못해도 락은 풀어야 한다
+            logger.exception("the device did not accept the stop during reset")
+
+        targets = list(self.controllers)
+        holder = self.lock.holder()
+        if holder is not None and holder not in targets:
+            # 컨트롤러는 사라졌는데 락만 남은 경우. 락만 놓는다.
+            targets.append(holder)
+        for session_id in targets:
+            self.abort_session(session_id)
+        return tuple(targets)
 
 
 def _thread_background(work: Callable[[], None]) -> None:

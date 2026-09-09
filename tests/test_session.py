@@ -20,6 +20,7 @@ from server.db import (
     Item,
     TrainingSession,
 )
+from server.device import DeviceProtocolError
 from server.device.mock import MockDevice
 from server.items import Difficulty
 from server.safety import SafetyGate, SessionLock
@@ -28,6 +29,7 @@ from server.session import (
     HOLD_DECAY_ON_CORRECT,
     ItemPrompt,
     RuleAdaptation,
+    SessionController,
     SessionPlan,
     SessionRunner,
 )
@@ -123,6 +125,85 @@ def test_the_lock_is_released_at_the_end(config, words, db, device, clock):
         rng=random.Random(1),
     )
     runner.run("haru", always_correct)
+    assert lock.holder() is None
+
+
+def test_the_lock_is_released_when_a_move_fails_mid_session(
+    config, words, db, clock
+):
+    """R4: 구동 중 예외가 나도 락은 반납된다 (DECISIONS.md §42).
+
+    가짜 시계라 만료로 풀릴 길이 없다. 명시적으로 놓아야만 통과한다.
+    """
+    device = MockDevice(config, sleep=clock.sleep)
+    device.connect()
+    lock = SessionLock(db, clock=clock)
+    gate = SafetyGate(config, device, lock, clock=clock)
+    runner = SessionRunner(
+        config, words, db, device, gate, lock, clock=clock,
+        rng=random.Random(1),
+    )
+
+    def explode(pose, transition_ms, hold_ms):
+        raise DeviceProtocolError("expected ACK, got 'RDY -1'")
+
+    device.move_to = explode  # type: ignore[method-assign]
+
+    with pytest.raises(DeviceProtocolError):
+        runner.run("haru", always_correct)
+    assert lock.holder() is None
+
+
+def test_the_lock_is_released_when_the_hand_cannot_be_parked(
+    config, words, db, clock
+):
+    """정리 단계(안전 자세)가 실패해도 락은 놓는다. 포트가 이미 죽은 경우다."""
+    device = MockDevice(config, sleep=clock.sleep)
+    device.connect()
+    lock = SessionLock(db, clock=clock)
+    gate = SafetyGate(config, device, lock, clock=clock)
+    controller = SessionController(
+        config, words, db, device, gate, lock, clock=clock,
+        rng=random.Random(1),
+    )
+    session_id = controller.start("haru")
+
+    def explode():
+        raise DeviceProtocolError("the port is gone")
+
+    device.safe = explode  # type: ignore[method-assign]
+
+    with pytest.raises(DeviceProtocolError):
+        controller.end(status="aborted")
+    assert lock.holder() is None
+
+    # 두 번째 end() 가 세션을 다시 닫지 않는다.
+    controller.end()
+    assert lock.holder() is None
+
+
+def test_a_failed_start_does_not_leave_the_lock_held(config, words, db, clock):
+    """락을 잡은 뒤 준비가 실패하면 놓고 나간다.
+
+    호출자는 session_id 를 받지 못하므로 이 세션을 끝낼 방법이 없다. 여기서
+    놓지 않으면 만료까지 아무도 손을 못 쓴다 (DECISIONS.md §42).
+    """
+    device = MockDevice(config, sleep=clock.sleep)
+    device.connect()
+    lock = SessionLock(db, clock=clock)
+    gate = SafetyGate(config, device, lock, clock=clock)
+    controller = SessionController(
+        config, words, db, device, gate, lock, clock=clock,
+        rng=random.Random(1),
+    )
+
+    def explode(learner_id, track):
+        raise RuntimeError("the difficulty table is unreadable")
+
+    controller._restore_difficulty = explode  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError):
+        controller.start("haru")
     assert lock.holder() is None
 
 

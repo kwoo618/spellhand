@@ -8,7 +8,10 @@ import pytest
 from server.device import (
     PERMILLE_MAX,
     DeviceBusyError,
+    DeviceCancelledError,
+    DeviceError,
     DeviceNotConnectedError,
+    DeviceProtocolError,
     Pose,
     flex_to_permille,
     pose_to_permille,
@@ -334,7 +337,12 @@ def test_stop_lands_on_the_safe_pose(device, config):
 
 
 def test_stop_during_a_move_abandons_the_target(config):
-    """정지가 걸리면 진행 중이던 이동은 목표에 도달하지 않는다."""
+    """정지가 걸리면 진행 중이던 이동은 목표에 도달하지 않는다.
+
+    그리고 **조용히 끝나지 않는다.** 완료처럼 반환하면 상위 계층이 손이 중간에
+    멈춘 문항을 학습자에게 내민다. SerialDevice 와 같은 예외를 던진다
+    (DECISIONS.md §42).
+    """
     stopped = []
 
     def stop_on_first_tick(seconds):
@@ -344,11 +352,34 @@ def test_stop_during_a_move_abandons_the_target(config):
 
     device = MockDevice(config, sleep=stop_on_first_tick)
     device.connect()
-    device.move_to(pose_of(config, "S"), transition_ms=900, hold_ms=0)
+    with pytest.raises(DeviceCancelledError):
+        device.move_to(pose_of(config, "S"), transition_ms=900, hold_ms=0)
 
     assert device.current_flex() == dict(config.safe)
     assert device.current_flex() != dict(config.poses["S"])
     assert device.is_busy is False
+
+
+def test_a_cancelled_move_is_not_a_communication_error(config):
+    """취소는 통신 오류가 아니다. 상위 계층이 둘을 구분할 수 있어야 한다."""
+    assert issubclass(DeviceCancelledError, DeviceError)
+    assert not issubclass(DeviceCancelledError, DeviceProtocolError)
+
+
+def test_stop_during_the_hold_also_raises(config):
+    """도착 후 유지 중에 정지가 걸려도 마찬가지다."""
+    ticks = []
+
+    def stop_after_arrival(seconds):
+        ticks.append(seconds)
+        if len(ticks) == 2:
+            # 전환 1틱 + 유지 sleep. 유지 sleep 에서 정지가 걸린다.
+            device.stop()
+
+    device = MockDevice(config, sleep=stop_after_arrival)
+    device.connect()
+    with pytest.raises(DeviceCancelledError):
+        device.move_to(pose_of(config, "S"), transition_ms=1, hold_ms=900)
 
 
 def test_a_new_move_after_stop_is_accepted(device, config):

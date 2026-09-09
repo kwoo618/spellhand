@@ -24,6 +24,7 @@ __all__ = [
     "DeviceBusyError",
     "DeviceNotConnectedError",
     "DeviceTimeoutError",
+    "DeviceCancelledError",
     "DeviceConfigError",
     "DeviceProtocolError",
     "DeviceRangeError",
@@ -66,6 +67,15 @@ class DeviceNotConnectedError(DeviceError):
 
 class DeviceTimeoutError(DeviceError):
     """디바이스가 기대한 시간 안에 응답하지 않았다."""
+
+
+class DeviceCancelledError(DeviceError):
+    """진행 중이던 동작이 비상 정지(`Z`)로 취소됐다.
+
+    **통신 오류가 아니다.** 프로토콜은 멀쩡하고 사람이 멈춘 것이다. 상위 계층은
+    이 둘을 다르게 다뤄야 한다 — 취소는 다음 문항으로 넘어가면 되지만, 통신
+    오류는 세션을 접고 락을 놓아야 한다 (DECISIONS.md §42).
+    """
 
 
 class DeviceConfigError(DeviceError):

@@ -293,3 +293,24 @@ def device_stop(request: Request) -> Dict[str, Any]:
     station = _station(request)
     station.device.stop()
     return {"status": "stopped"}
+
+
+@router.post("/device/reset")
+def device_reset(request: Request) -> Dict[str, Any]:
+    """물린 락을 서버 재시작 없이 푼다 (PRD 11장).
+
+    활성 세션을 `aborted` 로 닫고, 락을 놓고, 손을 안전 자세로 되돌린다.
+    답한 문항까지의 기록과 난이도는 남는다 — 중단 세션과 같은 취급이다
+    (DECISIONS.md §39).
+
+    **§42 수정의 대체가 아니라 보조다.** 원인을 고치는 것이 먼저고, 이것은
+    시연 중에 서버를 껐다 켤 수 없어서 두는 마지막 수단이다. 진행 중인
+    세션이 날아가므로 화면에서 확인 절차를 거친다.
+    """
+    station = _station(request)
+    ended = station.reset_device()
+    return {
+        "status": "reset",
+        "ended_sessions": list(ended),
+        "lock_holder": station.lock.holder(),
+    }

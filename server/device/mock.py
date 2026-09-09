@@ -17,6 +17,7 @@ from server.config import Config
 from server.device import (
     DeviceAdapter,
     DeviceBusyError,
+    DeviceCancelledError,
     DeviceNotConnectedError,
     Pose,
 )
@@ -33,8 +34,13 @@ class MockDevice(DeviceAdapter):
     테스트는 항상 주입해서 쓴다.
 
     동작마다 세대 번호를 붙인다. `stop()` 이나 새 동작이 세대를 올리면, 이미
-    돌고 있던 동작은 다음 틱에서 자기 세대가 지났음을 보고 조용히 물러난다.
-    플래그 하나로 처리하면 정지 직후 시작된 동작을 이전 동작이 취소해 버린다.
+    돌고 있던 동작은 다음 틱에서 자기 세대가 지났음을 보고 `DeviceCancelledError`
+    를 던진다. 플래그 하나로 처리하면 정지 직후 시작된 동작을 이전 동작이
+    취소해 버린다.
+
+    **취소된 이동은 조용히 끝나지 않는다.** 완료처럼 반환하면 상위 계층이
+    `ready_at` 을 찍고 답을 받으러 간다 — 손이 중간에 멈춘 문항을 학습자에게
+    내미는 셈이다. SerialDevice 와 같은 예외를 던진다 (DECISIONS.md §42).
     """
 
     def __init__(
@@ -166,10 +172,17 @@ class MockDevice(DeviceAdapter):
                 self._sleep(tick_ms / _MS_PER_SECOND)
                 with self._lock:
                     if self._generation != generation:
-                        return
+                        raise DeviceCancelledError(
+                            "the motion was cancelled before it arrived"
+                        )
                     self._flex = _blend(start, target, fraction, is_last=is_last)
 
             self._sleep(hold_ms / _MS_PER_SECOND)
+            with self._lock:
+                if self._generation != generation:
+                    raise DeviceCancelledError(
+                        "the motion was cancelled while holding"
+                    )
         finally:
             with self._lock:
                 if self._generation == generation:
