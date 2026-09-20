@@ -73,6 +73,25 @@ WEB_ROOT = REPO_ROOT / "web"
 # 트래픽은 1/2.5 로 준다 (DECISIONS.md §41).
 FLEX_FEED_INTERVAL_MS = 50
 
+# 거부 몸통에 싣는 부가 칸. 예외가 들고 있으면 나가고, 없으면 칸 자체가 없다.
+# 화면이 문구를 지으려면 사실이 **데이터로** 와야 한다 — 영어 문장에서
+# `['G']` 를 파싱하게 두면 문구를 고칠 때마다 화면이 깨진다.
+REJECTION_FIELDS = ("letters", "alternatives")
+
+
+def rejection_body(exc) -> Dict[str, object]:
+    """거부 하나를 JSON 몸통으로. REST 와 WS 가 **같은 것**을 쓴다.
+
+    코드와 원문(`detail`)은 `safety.py` · `session.py` 가 만든 그대로다.
+    여기서 문구를 새로 짓지 않는다.
+    """
+    body: Dict[str, object] = {"code": exc.code, "detail": str(exc)}
+    for name in REJECTION_FIELDS:
+        value = getattr(exc, name, None)
+        if value is not None:
+            body[name] = list(value)
+    return body
+
 
 @dataclass
 class Station:
@@ -140,9 +159,10 @@ class Station:
             except (SafetyError, SessionError) as exc:
                 # 거부다. 아무것도 구동되지 않았고 세션은 그대로 살아 있다.
                 logger.warning("background work rejected: %s", exc)
+                # REST 거부와 **같은 몸통**이다. 같은 사실이 두 경로로 다르게
+                # 나가면 화면이 한쪽에서만 문구를 만들 수 있게 된다.
                 self.hub.publish(
-                    session_id,
-                    {"type": "error", "code": exc.code, "detail": str(exc)},
+                    session_id, {"type": "error", **rejection_body(exc)}
                 )
             except Exception as exc:  # noqa: BLE001 - 스레드가 조용히 죽지 않게
                 # 예상하지 못한 실패다 — 손이 대답하지 않거나 버그다. 어느
@@ -284,11 +304,9 @@ def create_app(station: Optional[Station] = None, **kwargs: object) -> FastAPI:
     # 거부는 safety.py / session.py 가 만든 코드를 그대로 싣는다.
     # 라우트에서 에러 문자열을 새로 짓지 않는다.
     def _rejection(exc) -> JSONResponse:
-        body: Dict[str, object] = {"code": exc.code, "detail": str(exc)}
-        alternatives = getattr(exc, "alternatives", None)
-        if alternatives is not None:
-            body["alternatives"] = list(alternatives)
-        return JSONResponse(status_code=exc.http_status, content=body)
+        return JSONResponse(
+            status_code=exc.http_status, content=rejection_body(exc)
+        )
 
     @app.exception_handler(SafetyError)
     def _on_safety_error(request: Request, exc: SafetyError) -> JSONResponse:

@@ -470,7 +470,16 @@ class SessionController:
         session_id, learner_id = self._open_session(
             learner_name, self._plan, source
         )
-        self._lock.acquire(session_id)
+        try:
+            self._lock.acquire(session_id)
+        except Exception:
+            # 락을 잡지 못했다. 세션 행은 이미 열려 있으므로 닫고 나간다 —
+            # 그러지 않으면 `running` 인 채로 영영 남는다. 승인이
+            # `LOCK_UNAVAILABLE` 로 실패할 때마다 한 줄씩 쌓였다
+            # (DECISIONS.md §49). 락은 잡은 적이 없으므로 놓지 않는다.
+            self._close_session(session_id, status="aborted")
+            self._ended = True
+            raise
         # 락을 잡은 다음부터는 실패해도 놓고 나가야 한다. 여기서 예외가 나면
         # 호출자는 session_id 를 받지 못해 이 세션을 끝낼 방법이 없고, 락은
         # 만료(60초)까지 남는다 (DECISIONS.md §42).

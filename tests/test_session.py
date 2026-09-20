@@ -23,7 +23,7 @@ from server.db import (
 from server.device import DeviceProtocolError
 from server.device.mock import MockDevice
 from server.items import Difficulty
-from server.safety import SafetyGate, SessionLock
+from server.safety import LockUnavailableError, SafetyGate, SessionLock
 from server.session import (
     DIFFICULTY_LADDER,
     HOLD_DECAY_ON_CORRECT,
@@ -247,6 +247,147 @@ def test_a_second_learner_cannot_run_while_the_lock_is_held(
 
     with pytest.raises(LockUnavailableError):
         runner.run("haru", always_correct)
+
+
+# --------------------------------------------------------------------------- #
+# 세션 행 누수 회귀 (DECISIONS §49) — 이 테스트는 완화하지 않는다 (R4)
+# --------------------------------------------------------------------------- #
+#
+# `_open_session()` 이 행을 넣은 뒤 `lock.acquire()` 가 거부되면, 그 행이
+# `running` 인 채 남는다. 남은 행은 다음 승인에서 또 락을 물어 `409` 를
+# 영구화한다 — 승인이 실패할 때마다 한 줄씩 쌓인다.
+#
+# 아래 테스트는 전부 가짜 시계를 쓴다. 만료(60초)로 우연히 풀려서 통과하는
+# 길이 없다 — 락이 실제로 물려 있는 상태에서만 검사된다.
+
+def hold_the_lock_with_another_session(db, lock, name="mina"):
+    """다른 세션이 락을 쥔 상태를 만들고 그 세션 id 를 돌려준다."""
+    from server.db import get_or_create_learner
+
+    with db.session() as session:
+        learner = get_or_create_learner(session, name)
+        other = TrainingSession(
+            learner_id=learner.id, status="running", source="manual"
+        )
+        session.add(other)
+        session.commit()
+        other_id = other.id
+    lock.acquire(other_id)
+    return other_id
+
+
+def running_session_ids(db, ignore=()):
+    """지금 `running` 인 세션 행. 설정용으로 만든 행은 빼고 센다."""
+    with db.session() as session:
+        rows = (
+            session.query(TrainingSession)
+            .filter(TrainingSession.status == "running")
+            .all()
+        )
+        return sorted(row.id for row in rows if row.id not in ignore)
+
+
+def approve(config, words, db, device, lock, clock, seed=1):
+    """승인 한 번 — 스테이션과 같이 컨트롤러를 새로 만들어 시작한다."""
+    gate = SafetyGate(config, device, lock, clock=clock)
+    controller = SessionController(
+        config, words, db, device, gate, lock, clock=clock,
+        rng=random.Random(seed),
+    )
+    return controller.start("haru")
+
+
+def test_a_start_that_cannot_take_the_lock_closes_its_session_row(
+    config, words, db, device, clock
+):
+    """락 획득이 거부되면 이미 열린 세션 행을 `aborted` 로 닫고 나간다.
+
+    닫지 않으면 `running` 인 채 영영 남아 다음 승인을 막는다 (DECISIONS §49).
+    """
+    lock = SessionLock(db, clock=clock)
+    other_id = hold_the_lock_with_another_session(db, lock)
+
+    with pytest.raises(LockUnavailableError):
+        approve(config, words, db, device, lock, clock)
+
+    # 설정용 행 말고 `running` 으로 남은 것이 없다.
+    assert running_session_ids(db, ignore={other_id}) == []
+
+    # 그리고 남은 행은 지워진 것이 아니라 `aborted` 로 닫혀 있다 — 승인이
+    # 시도된 사실은 기록으로 남는다.
+    with db.session() as session:
+        mine = (
+            session.query(TrainingSession)
+            .filter(TrainingSession.id != other_id)
+            .all()
+        )
+        assert [row.status for row in mine] == ["aborted"]
+        assert all(row.ended_at is not None for row in mine)
+
+
+def test_a_start_that_cannot_take_the_lock_leaves_the_holder_alone(
+    config, words, db, device, clock
+):
+    """정리하면서 남의 락을 놓지 않는다 — 잡은 적이 없기 때문이다.
+
+    여기서 `release` 를 부르면 보유자가 손을 쓰는 중에 락이 풀린다.
+    """
+    lock = SessionLock(db, clock=clock)
+    other_id = hold_the_lock_with_another_session(db, lock)
+
+    with pytest.raises(LockUnavailableError):
+        approve(config, words, db, device, lock, clock)
+
+    assert lock.holder() == other_id
+
+
+def test_repeated_failed_starts_do_not_pile_up_running_rows(
+    config, words, db, device, clock
+):
+    """승인이 연속으로 실패해도 유령 행이 쌓이지 않는다.
+
+    409 영구화의 실제 원인이었다: 실패 한 번에 `running` 행 하나가 남고,
+    남은 행이 다음 승인을 또 막는다 (DECISIONS §49).
+    """
+    lock = SessionLock(db, clock=clock)
+    other_id = hold_the_lock_with_another_session(db, lock)
+    started_at = clock.now
+
+    for _ in range(5):
+        with pytest.raises(LockUnavailableError):
+            approve(config, words, db, device, lock, clock)
+
+    assert running_session_ids(db, ignore={other_id}) == []
+
+    # 다섯 번 모두 락이 물려 있어서 실패한 것이다. 가짜 시계는 한 틱도
+    # 움직이지 않았으므로 만료(60초)가 끼어들 여지가 없다.
+    assert clock.now == started_at
+    assert lock.holder() == other_id
+
+
+def test_a_start_succeeds_once_the_lock_is_free_again(
+    config, words, db, device, clock
+):
+    """실패가 쌓인 뒤에도 락이 풀리면 다음 승인은 정상으로 시작한다.
+
+    누수된 행이 남아 있으면 이 시작이 다시 `LOCK_UNAVAILABLE` 로 막혔다.
+    """
+    lock = SessionLock(db, clock=clock)
+    other_id = hold_the_lock_with_another_session(db, lock)
+
+    for _ in range(3):
+        with pytest.raises(LockUnavailableError):
+            approve(config, words, db, device, lock, clock)
+
+    # 만료가 아니라 명시적 반납으로 푼다. 가짜 시계는 그대로 둔다.
+    lock.release(other_id)
+
+    session_id = approve(config, words, db, device, lock, clock)
+
+    assert lock.holder() == session_id
+    assert running_session_ids(db, ignore={other_id}) == [session_id]
+    with db.session() as session:
+        assert session.get(TrainingSession, session_id).status == "running"
 
 
 # --------------------------------------------------------------------------- #
