@@ -65,15 +65,21 @@ R5. 추측으로 빈칸을 채우지 않는다. TBD는 TBD로 남긴다. 규칙�
 `DECISIONS.md`를 확인한 뒤, 그래도 불분명하면 멈추고 물어본다.
 
 알려진 불일치:
-- 없음. v2.1이 구본 v2의 불일치 3건(`servo_range_deg` 누락, Python 버전,
-  마이그레이션 전제)을 모두 해소했다. 새로 어긋나는 것을 발견하면 여기 적는다
+- **PRD 보드 표기.** PRD 8행과 18장 표는 `Arduino Uno`로 적혀 있으나 실제
+  업로드·구동은 **UNO R4 WiFi(COM3)** 다. 코드가 맞다 — 핀은 `poses.json`에서
+  오고 펌웨어는 보드 모델을 모른다
+- **`practice.html` heartbeat 주석.** 519행 주석은 "15초 주기"라고 적혀 있으나
+  실제 `setInterval`은 10초다. **코드가 맞다** — PRD 10장의 15초는 만료(60초)
+  전에 넘겨야 하는 *상한*이고, 10초는 여유를 둔 것이다. 고칠 것은 주석이다
+- v2.1이 구본 v2의 불일치 3건(`servo_range_deg` 누락, Python 버전,
+  마이그레이션 전제)은 모두 해소했다. 새로 어긋나는 것을 발견하면 여기 적는다
 
 ## 현재 상태
 
 - 목표: 신규 개발. 기준 문서는 기획서 v3 + PRD v2.1.
   **1차 완료 기준(Mock에서 판별 8 + 단어 4 세션 완주 + 트랙별 요약)은 달성했다.**
 
-- 완료 (416테스트):
+- 완료 (513테스트):
   - `config` — poses.json schema v2(핀 포함) + words.json 필터
   - `calibration` — flex ↔ 각도, 이중 clamp, CAL_HASH
   - `device` — Pose/DeviceAdapter(동기), MockDevice, SerialDevice, 팩토리
@@ -81,6 +87,10 @@ R5. 추측으로 빈칸을 채우지 않는다. TBD는 TBD로 남긴다. 규칙�
   - `routes` — REST + WS, `practice.html`, `mockhand.html`
   - `firmware/hand_controller` — P/H/Z/N 프로토콜. **UNO R4 WiFi(COM3)에 업로드·구동 확인**
   - `tools/gen_calibration.py` — calibration.h 생성 + `--check`
+  - `mcp_server/server.py` — 3층 도구 9개, 구조화된 실패, `/ws/mcp-log`.
+    스테이션의 REST 클라이언트다 (DECISIONS §46)
+  - `server/agent.py` — 계획 생성 + 검증 10항목 + HITL + 규칙 폴백.
+    **LLM은 계획 생성까지만이고 문항 내 적응은 규칙이다** (DECISIONS §47)
 
 - 진행 중: 없음
 
@@ -88,10 +98,12 @@ R5. 추측으로 빈칸을 채우지 않는다. TBD는 TBD로 남긴다. 규칙�
 
 - 미해결:
   - **제3자 판별 파일럿 미실시.** 11자 세트가 지각적으로 검증되지 않았다 (3주차)
-  - **①축이 ②·③축을 세션 안에서 밀어낸다** (DECISIONS §39). 감쇠 계수·단 전환
-    조건 조정은 4주차 실측 오답률로 판단한다
-  - **중지·약지 `closed` 값 확인 대기.** 중지 125°가 약지 105°보다 20° 더
-    움직인다. 진단 데이터는 넘겼고 관찰 결과 회신을 기다린다.
-    `poses.json` 수치는 전기팀 확정값이라 임의로 바꾸지 않는다
+  - **①축이 ②·③축을 세션 안에서 밀어낸다** (DECISIONS §39 첫 항목). 감쇠
+    계수·단 전환 조건 조정은 4주차 실측 오답률로 판단한다
+  - **E 약지 값 확인 대기.** E의 `ring: 0.57`이 실기에서 덜 접혀 보인다.
+    전기팀 회신을 기다린다. `poses.json` 수치는 전기팀 확정값이라 임의로
+    바꾸지 않는다 (R1, 건드리지 말 것)
+  - 위 "알려진 불일치" 2건(PRD 보드 표기, heartbeat 주석)
 
-- 다음: MCP 서버 → 에이전트(`agent.py`) → 진단 뷰(`teacher.html`, MCP 로그 패널)
+- 다음: 진단 뷰(`teacher.html`, MCP 로그 패널) → 실데이터 수집(10명 × 2세션,
+  최소 6명) → 시연 리허설 6구간 전체
