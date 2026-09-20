@@ -774,7 +774,10 @@ def publish_mcp_log(
         raise SessionStateError(
             f"type is {type_!r}, expected one of {list(MCP_LOG_TYPES)}"
         )
-    event = {key: value for key, value in body.items() if key != "type"}
-    event["type"] = type_
+    # `type` 이 먼저 나오게 둔다. 로그 패널이 줄마다 종류부터 읽는다.
+    event: Dict[str, Any] = {"type": type_}
+    event.update(
+        {key: value for key, value in body.items() if key != "type"}
+    )
     station.hub.publish(MCP_LOG_CHANNEL, event)
     return {"status": "published", "type": type_}

@@ -1522,3 +1522,219 @@ INFO server.device: device adapter: serial on COM3 @ 115200 baud
 **`pydantic-settings` 는 쓰지 않았다.** 기획서의 "의도적으로 쓰지 않는 것"
 목록에 있다. 필요한 것은 "파일을 읽어 없는 키만 채운다" 한 가지이고,
 `dotenv_values()` 로 파싱만 빌려 왔다.
+
+
+---
+
+## 46. MCP 서버는 스테이션의 REST 클라이언트다 (별도 프로세스)
+
+**결정.** `mcp_server/server.py` 는 `Station` 을 직접 들지 않는다. 이미 떠 있는
+스테이션 서버(`uvicorn server.routes:app`)를 `httpx2` 로 부르는 클라이언트다.
+Claude Desktop 이 stdio 로 이 파일을 띄우고, 이 파일이 REST 를 부른다.
+
+```
+Claude Desktop ──stdio──▶ mcp_server/server.py
+                              │ httpx2 (STATION_URL, 기본 127.0.0.1:8000)
+                              ▼
+                       uvicorn server.routes:app
+                       ├─ SessionController (유일)
+                       ├─ SafetyGate / SessionLock
+                       ├─ DeviceAdapter (유일)
+                       └─ /ws/mcp-log ◀── POST /api/mcp-log
+```
+
+**이유.** 세 가지가 프로세스 경계에서 부딪힌다.
+
+1. 시리얼 포트는 한 프로세스만 쥘 수 있다. MCP 프로세스가 자기 `Station` 을
+   만들면 웹 서버와 합쳐 손이 두 개가 된다.
+2. `SessionController` 는 `station.controllers` 인메모리에 있다. `submit_answer`
+   가 채점하려면 그 객체와 같은 프로세스여야 한다.
+3. `/ws/mcp-log` 는 웹 서버가 낸다. 로그 패널이 MCP 호출을 보려면 이벤트가 그
+   프로세스에 도착해야 한다.
+
+REST 클라이언트로 두면 셋이 동시에 해결된다. 구동이 기존
+`/api/sessions/...` 라우트를 지나므로 **MCP 경로가 안전 게이트를 우회할 길이
+구조적으로 없다** — 우회하지 않는다고 약속하는 것이 아니라 우회할 코드가 없다.
+
+**대가 세 가지.**
+
+- **스테이션이 먼저 떠 있어야 한다.** 없으면 모든 도구가
+  `station_unreachable` 구조화 실패로 답한다. 예외를 던지지 않는 이유는
+  Claude Desktop 이 MCP 서버를 먼저 띄우기 때문이다 — 그때 도구가 터지면
+  사용자는 "왜 안 되는지" 를 알 수 없다. "서버를 띄우라" 고 말해야 한다.
+- **로그가 들어오는 입구가 필요하다** (`POST /api/mcp-log`). WS 자체는
+  단방향으로 남지만, 이 입구는 같은 기계의 무엇이든 쓸 수 있다.
+  **그래서 로그 패널은 감사 기록이 아니다.** 시연용 표시 장치다. 명령 경로가
+  아니므로(손을 움직이거나 세션을 바꾸지 않는다) §27 의 "명령은 REST, 상태는
+  WS" 와 어긋나지 않는다.
+- **읽기 도구용 REST 엔드포인트를 더해야 한다.** `/api/capabilities`,
+  `/api/item-bank`, `/api/learners/{name}/stats` 가 그것이다. MCP 서버가
+  `station.db` 를 직접 읽는 길도 있었지만, 일부는 REST 로 일부는 직접 읽으면
+  트랙 분리·깊이쌍 게이팅이 두 경로로 갈라진다.
+
+---
+
+### 46.1 `present_letters()` — 밖에서 고른 문항의 진입점
+
+**문제.** `SessionController` 는 문항을 스스로 만들고(`next_item()`) 그 문항으로
+채점한다(`submit()`). PRD 12.1 의 `present_sequence(session_id, letters, ...)` 는
+**LLM 이 글자를 지정**한다. "이 글자열을 활성 문항으로 삼아라" 는 진입점이
+없었고, 그대로 두면 `submit_answer` 가 무엇에 대해 채점하는지 정해지지 않는다 —
+학습자가 본 것과 채점 대상이 어긋난다.
+
+**결정.** `SessionController.present_letters()` 를 더했다. 기존 행은 고치지
+않았다. 활성 문항(`_active_spec`/`_active_key`)을 세우고 **기존 `_present()` 를
+부른다.**
+
+**이유.** 대안은 라우트에서 게이트 → 구동 → 판정 → 기록을 다시 엮는 것이었다.
+§28 이 "루프를 따로 두 벌 두었다면 둘이 갈라지는 것은 시간 문제였다" 로 이미
+경계한 구조다. 진입점 하나를 더하면 안전 게이트·중립 삽입·글자별 heartbeat·
+WS 이벤트·기록·적응·난이도 이월이 전부 **같은 코드**를 지난다.
+
+**거부되면 세션 상태를 되돌린다.** 게이트가 막은 요청이 문항 번호를 올려 두면
+그다음 문항부터 `index/total` 이 어긋나고, 소비된 계획 칸도 돌아오지 않는다.
+`_present()` 가 검사와 구동을 함께 하므로 앞에서 상태를 세운 뒤 실패 시
+스냅샷으로 복원한다.
+
+**`transition_ms` 를 받지 않는다.** 난이도 축이 아니고(PRD 9.1) 호출자가 정할
+값도 아니다. 트랙의 현재 난이도에서 읽는다. 스키마에 이 파라미터를 두지 않는
+것은 R1 의 요구이기도 하다.
+
+**`scored=False` 는 글자 하나만 받는다** (`demo_letter`). 깊이쌍은 두 글자가
+모두 있어야 성립하므로(`item_contains_depth_pair`) 한 글자 시범은 커리큘럼
+검사에 걸릴 수 없다. 즉 PRD 10장 ③ 의 면제(`PURPOSE_DEMO`)가 필요하지 않다.
+두 글자 시범을 이 경로로 열면 그 면제를 다시 구현해야 하므로 길이로 막았다.
+
+---
+
+### 46.2 구동 도구는 동기다
+
+**결정.** `POST /api/sessions/{id}/sequence` 와 `.../demo-letter` 는 손이 끝날
+때까지 돌려주지 않는다. 브라우저 경로(`/present`)는 202 를 즉시 돌려주고
+진행을 WS 로 알리는데(§27), 이쪽은 반대다.
+
+**이유.** 도구 호출자에게는 WS 가 없다. 거부 사유가 **호출 결과로** 돌아오지
+않으면 시연 ⑥ 이 성립하지 않는다 — "CAT 보여줘" 에 대한 구조화 실패가
+Claude Desktop 화면에 떠야 한다. 백그라운드로 돌리면 202 만 돌아가고 거부는
+아무도 보지 않는 WS 로 사라진다.
+
+최악의 소요는 7글자를 또박또박·느린 재생·최대 유지로 낼 때이고
+`1800+3000 + 6×(900+1800+3000) = 39.0초`다. HTTP 타임아웃은 그 두 배를 넘겨
+120초로 잡았다 — 여기서 먼저 끊으면 손은 계속 움직이는데 호출자만 실패를
+받는다. FastAPI 의 동기 라우트는 스레드풀에서 돌므로 이벤트 루프를 막지 않고,
+구동 중 비상 정지도 그대로 듣는다 (§42).
+
+---
+
+### 46.3 세션 없는 구동은 `LOCK_NOT_HELD` 다
+
+**결정.** 구동 라우트 앞단에서 락 보유자를 먼저 본다(`_require_lock`). 컨트롤러
+조회보다 먼저다.
+
+**이유.** 이 검사 없이는 세션이 아예 없는 호출이 `SESSION_STATE` 로 돌아온다 —
+컨트롤러 조회가 먼저이기 때문이다. 그런데 PRD 15.2 의 라이브 차단 사례는
+"`start_session` 없이 `present_sequence`" 를 **`LOCK_NOT_HELD`** 로 규정하고
+있고, 그게 원인을 더 정확히 말한다: 세션이 없으면 락도 없다.
+
+**게이트를 대신하지 않는다.** 아래에서 `SafetyGate` 가 ① 을 다시 본다. 앞서
+거절하는 검사는 통과 범위를 넓히지 않으므로 R4 를 약화시키지 않는다.
+
+---
+
+### 46.4 `reason` 은 거부 코드를 소문자로 바꾼 것이다 (매핑 표 없음)
+
+**결정.** 구조화된 실패의 `reason` 은 스테이션이 준 `code` 를 `.lower()` 한
+것이다. 코드 → 사유 매핑 표를 두지 않는다. `next_step` 만 코드별로 적어 둔다.
+
+**이유.** 매핑 표가 있으면 `safety.py` 에 새 거부 코드가 생길 때 여기를 고치지
+않으면 **조용히 잘못된 사유가 나간다.** 표에 없는 코드를 "알 수 없는 오류" 로
+뭉개는 것도 같은 문제다. 소문자 변환은 코드가 늘어도 따라온다.
+
+`next_step` 이 없는 코드는 `reason` 과 `detail` 만 나간다. 없는 코드에 대해
+그럴듯한 다음 단계를 지어내지 않는다 (R5).
+
+**어댑터가 자기 이름을 쓰는 곳은 두 개뿐이다.**
+`station_unreachable`(스테이션이 답하지 않음) 과
+`invalid_arguments`(FastAPI 의 인자 검증 실패 — 스테이션이 거부 코드를 붙이지
+않는 유일한 경우). 둘 다 스테이션의 거부가 아니라 어댑터가 본 실패다.
+
+`blocked_pairs` 는 `get_capabilities` 를 다시 읽어 만든다. 쌍 목록을
+`mcp_server` 에 적으면 `poses.json` 단일 출처가 깨진다 (§1). 읽지 못하면 빈
+목록을 낸다 — 추측한 쌍을 내보내는 것보다 비어 있는 것이 낫다.
+
+---
+
+### 46.5 PRD 12.1 서명에 더한 선택 인자 두 개
+
+**`get_capabilities(learner_name=None)`.** PRD 의 응답에
+`depth_pairs_unlocked` 가 있는데 깊이쌍 해금은 **학습자별**이다
+(`stats.depth_unlocked(learner_id=...)`). 학습자를 모르면 정직하게 답할 수
+없다. 이름을 주면 그 학습자의 실제 값을, 주지 않으면 이력이 없는 학습자의
+값을 낸다 — 후자는 항상 `false` 이고 그것은 추측이 아니다. 기록이
+`window_items` 에 못 미치면 잠금이기 때문이다.
+
+**`get_item_bank(..., learner_name=None)`.** 같은 이유다. 깊이쌍 해금과 최근
+출제 목록이 학습자별이다. 이름이 없으면 깊이쌍은 **잠금**으로 보고 최근 출제는
+학습자를 가리지 않고 본다 — 근거가 없는 상태에서 가장 어려운 쌍을 후보에 넣지
+않는다.
+
+**후보 0개는 정상적인 답이다.** 깊이쌍이 잠긴 채 글자를 E·I 로 묶어 2글자를
+요청하면 통과하는 조합이 없다. 그 사실을 후보 0개로 알린다. 제약을 풀어
+채우지 않는다.
+
+---
+
+### 46.6 유지 시간은 자르고 알린다
+
+호출자가 LLM 이므로 범위 밖 `hold_ms` 가 온다. 상·하한이 설정값이라 도구
+스키마에 범위를 적을 수 없다 — 스키마는 데코레이터 시점에 만들어지고 설정은
+런타임에 읽힌다. 그래서 라우트에서 `timing.hold_min_ms ~ hold_max_ms` 로 자르고
+(PRD 13.3), 자른 사실을 경고로 남기고(§12), **실제로 쓰인 값을 응답에 담아**
+돌려준다. LLM 이 자기가 보낸 값이 쓰이지 않았음을 알 수 있어야 한다.
+
+---
+
+### 46.7 mcp 2.x API — 학습 데이터와 다른 것들
+
+설치된 것은 `mcp==2.1.1` 이다. v1 예제를 그대로 쓰면 전부 실패한다.
+
+| v1 | 2.1.1 |
+|---|---|
+| `from mcp.server.fastmcp import FastMCP` | `from mcp.server import MCPServer` |
+| `Tool.inputSchema` | `Tool.input_schema` (snake_case) |
+| `list_tools()` 동기 | `await server.list_tools()` |
+| `call_tool()` → `list[TextContent]` | → `CallToolResult(content, structured_content, is_error)` |
+
+`mcp.server.fastmcp` 는 import 하면 마이그레이션 안내를 담은
+`ModuleNotFoundError` 를 던진다. 친절한 실패라 원인을 바로 알 수 있다.
+
+**구조화된 출력은 반환 애너테이션이 `dict[str, Any]` 일 때만 생긴다.** 맨
+`dict` 는 `InvalidSignature` 로 거부된다. 모든 도구가 `dict[str, Any]` 를
+돌려주므로 `structured_content` 와 `output_schema` 가 붙는다.
+
+**`Literal[TRACKS]` 처럼 상수 튜플을 첨자로 넣어도 enum 이 나온다.** 그래서
+트랙·경계 모드 문자열을 `mcp_server` 에 복제하지 않고 `server.db` 의 상수를
+그대로 쓴다.
+
+---
+
+### 46.8 로그 채널은 세션 채널이 아니다
+
+`/ws/mcp-log` 는 `EventHub` 의 채널 0 을 쓴다. 세션 id 는 SQLite
+autoincrement 로 1부터이므로 겹치지 않는다.
+
+**세션에 얹지 않은 이유.** 세션이 시작되기 **전에** 오는 호출과 거부 —
+`get_capabilities`, 락 없는 `present_sequence` — 가 시연 ⑥ 의 핵심이다.
+`/ws/session/{id}` 에 얹으면 그것들이 어디에도 나타나지 않는다.
+
+허브를 그대로 쓰므로 늦게 붙은 로그 패널도 최근 32건을 되돌려 받는다
+(`_REPLAY_DEPTH`). 시연 중에 패널을 열면 이미 지나간 호출이 보인다.
+
+---
+
+### 46.9 stdout 은 프로토콜 전용이다
+
+`_configure_logging()` 이 stderr 로만 로그를 낸다. stdout 에 한 줄이라도
+섞이면 클라이언트가 JSON-RPC 파싱에 실패하고, **증상은 "도구가 하나도 안
+보인다" 로 나타난다** — 원인과 증상이 멀어서 찾기 어려운 종류다.
+`load_env()` 가 `.env` 로딩을 `INFO` 로 남기므로 이 설정이 먼저 와야 한다.
