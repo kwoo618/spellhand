@@ -342,6 +342,12 @@ function openLogSocket() {
 
 /** `HH:MM:SS`. 로케일 포맷을 쓰지 않는다 — ko-KR 은 "22시 25분 12초"가 되어
     좁은 시간 칸을 넘친다. */
+function sourceLabel(source) {
+  if (source === "rule") return "규칙 폴백";
+  if (source === "llm") return "LLM";
+  return source || "출처 미상";
+}
+
 function clockText(date) {
   const two = (n) => String(n).padStart(2, "0");
   return `${two(date.getHours())}:${two(date.getMinutes())}:${two(date.getSeconds())}`;
@@ -366,12 +372,28 @@ function appendLog(event) {
       add(body, "span", "summary", event.summary || "");
       break;
     case "plan_ready":
+      // 승인 대기 자체가 시연 ⑥ 의 "라이브 정지" 다. 멈춰 있다는 사실이 로그에
+      // 남아야 그 뒤의 승인이 원인으로 읽힌다.
       item.className = "plan";
-      add(body, "div", "name", "계획 준비됨 — 승인 대기");
+      add(body, "div", "name",
+          `계획 ${event.plan_id ?? "?"} 준비됨 — 승인 대기 (실행 안 됨)`);
       add(
         body, "div", "summary",
-        `문항 ${event.items ?? "?"}개 · 예상 ${event.estimated_seconds ?? "?"}초`
+        `${sourceLabel(event.source)} · 문항 ${event.items ?? "?"}개` +
+        ` · 예상 ${event.estimated_seconds ?? "?"}초`
       );
+      break;
+    case "plan_decided":
+      if (event.status === "approved") {
+        item.className = "plan";
+        add(body, "div", "name",
+            `계획 ${event.plan_id ?? "?"} 승인됨 — 세션 ${event.session_id} 시작`);
+        add(body, "div", "summary", "사람이 승인했다. 이제부터 손이 움직인다.");
+      } else {
+        item.className = "result";
+        add(body, "div", "name", `계획 ${event.plan_id ?? "?"} 거부됨`);
+        add(body, "div", "summary", "세션은 만들어지지 않았다.");
+      }
       break;
     default:
       add(body, "div", "name", event.name || event.type);

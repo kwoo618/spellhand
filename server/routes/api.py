@@ -17,6 +17,7 @@ from fastapi import APIRouter, Body, Query, Request
 from sqlalchemy import select
 
 from server.agent import PlanStateError
+from server.calibration import calibration_hash
 from server.db import (
     BOUNDARIES,
     BOUNDARY_EXPLICIT,
@@ -25,6 +26,7 @@ from server.db import (
     TRACKS,
     Learner,
 )
+from server.device import DEVICE_MODE_SERIAL
 from server.items import (
     RECENT_ITEM_WINDOW,
     discrimination_violations,
@@ -56,8 +58,20 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 
-# MCP 로그 패널이 받아들이는 이벤트 종류 (PRD 11장 `/ws/mcp-log`).
-MCP_LOG_TYPES = ("tool_call", "tool_result", "plan_ready", "blocked")
+# MCP 로그 패널이 받아들이는 이벤트 종류.
+#
+# 앞의 네 가지는 PRD 11장 `/ws/mcp-log` 에 적힌 것이다. `plan_decided` 는 더한
+# 것이다 — HITL 의 **결정**이 로그에 남지 않으면, 패널에 `plan_ready` 가 뜬 뒤
+# 정적이 흐르고 갑자기 구동 호출이 통과하는 것처럼 보인다. 시연 ⑥ 의 "라이브
+# 정지" 는 "멈췄다 → 사람이 승인했다 → 그래서 움직인다" 가 한 화면에서 이어져야
+# 성립한다 (DECISIONS.md §48).
+MCP_LOG_TYPES = (
+    "tool_call",
+    "tool_result",
+    "plan_ready",
+    "plan_decided",
+    "blocked",
+)
 
 # 후보 문항을 몇 번 뽑아 보고 멈출 것인가. items.py 의 `_MAX_ATTEMPTS` 와 같은
 # 역할이지만 저쪽은 문항 하나 기준이고 이쪽은 목록 하나 기준이라 재사용하지
@@ -423,14 +437,44 @@ def learner_stats(request: Request, learner_id: int) -> Dict[str, Any]:
 
 @router.get("/device/status")
 def device_status(request: Request) -> Dict[str, Any]:
+    """상태, 모드, 캘리브레이션 해시 일치 여부 (PRD 11장)."""
     station = _station(request)
+    expected = calibration_hash(station.config)
+    ok, state = _calibration_state(station, expected)
     return {
         "mode": station.device_mode,
         "busy": station.device.is_busy,
         "lock_holder": station.lock.holder(),
-        # 캘리브레이션 해시 대조는 tools/gen_calibration.py 이후다 (게이트 ⑧).
-        "calibration_hash_ok": None,
+        # 서버가 기대하는 해시. `firmware/hand_controller/calibration.h` 의
+        # `CAL_HASH` 와 눈으로 맞춰 볼 수 있는 값이다 (DECISIONS.md §35).
+        "calibration_hash": expected,
+        # **`true` / `false` / `null` 만 담는다.** "n/a" 같은 문자열을 넣지 않는
+        # 이유는, `_ok` 라는 이름 때문에 호출자가 `if not ok:` 로 읽을 것이고
+        # 그러면 "해당 없음" 과 "불일치" 가 같은 분기로 들어가기 때문이다 —
+        # 이 필드가 막으려는 사고가 바로 그것이다. 사유는 아래 칸에 둔다.
+        "calibration_hash_ok": ok,
+        # ok | mismatch | not_applicable | unknown
+        "calibration_hash_state": state,
     }
+
+
+def _calibration_state(station, expected: str) -> "tuple[Optional[bool], str]":
+    """해시 대조 상태.
+
+    대조는 `SerialDevice.connect()` 의 핸드셰이크에서 일어난다. 불일치면 연결이
+    거부되어 서버가 기동하지 못하므로, **살아 있는 serial 서버에서 `mismatch` 는
+    나오지 않는다** (DECISIONS.md §35, §48). 그래도 비교를 그대로 두는 것은,
+    나중에 연결 시점 거부를 무르더라도 이 필드가 계속 사실을 말하게 하기 위한
+    것이다.
+    """
+    if station.device_mode != DEVICE_MODE_SERIAL:
+        # Mock 에는 펌웨어가 없다. 대조할 상대가 없는 것이지 틀린 것이 아니다.
+        return None, "not_applicable"
+    verified = getattr(station.device, "verified_calibration_hash", None)
+    if verified is None:
+        # 아직 연결되지 않았거나 끊겼다. 지금 손에 올라간 펌웨어를 알지 못한다.
+        return None, "unknown"
+    return verified == expected, "ok" if verified == expected else "mismatch"
 
 
 @router.post("/device/stop")
@@ -820,7 +864,31 @@ def create_plan(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[str,
         word_items=int(body.get("word_items", default.word_items)),
     )
     stored = station.plans.add(learner_name, prompt, plan, report, attempts)
+    # 계획이 준비되었고 **아직 실행되지 않았다**는 사실을 로그 패널로 보낸다
+    # (PRD 11장 `plan_ready`, 시연 ⑥).
+    _publish_plan(station, "plan_ready", stored)
     return stored.as_json()
+
+
+def _publish_plan(station, type_: str, stored) -> None:
+    """계획 사건을 MCP 로그 채널로 흘린다.
+
+    `plan_id` 와 `source` 는 PRD 11장의 예시에 없지만 더했다. 화면에 뜬 계획과
+    로그 줄을 잇는 것이 `plan_id` 이고, 규칙 폴백이 돌았는지가 계획 하나에 대해
+    가장 먼저 알아야 할 사실이기 때문이다 (DECISIONS.md §48).
+    """
+    station.hub.publish(
+        MCP_LOG_CHANNEL,
+        {
+            "type": type_,
+            "plan_id": stored.plan_id,
+            "status": stored.status,
+            "source": stored.plan.source,
+            "items": len(stored.plan.items),
+            "estimated_seconds": stored.plan.estimated_seconds,
+            "session_id": stored.session_id,
+        },
+    )
 
 
 @router.post("/agent/plans/{plan_id}/approve", status_code=201)
@@ -849,6 +917,7 @@ def approve_plan(request: Request, plan_id: int) -> Dict[str, Any]:
     )
     station.controllers[session_id] = controller
     station.plans.approve(plan_id, session_id)
+    _publish_plan(station, "plan_decided", stored)
     payload = stored.as_json()
     payload["total_items"] = controller.total_items
     payload["state"] = controller.state
@@ -859,7 +928,11 @@ def approve_plan(request: Request, plan_id: int) -> Dict[str, Any]:
 def reject_plan(request: Request, plan_id: int) -> Dict[str, Any]:
     """사람이 거부한다. 세션은 만들어지지 않는다."""
     station = _station(request)
-    return station.plans.reject(plan_id).as_json()
+    stored = station.plans.reject(plan_id)
+    # 거부는 이것 말고는 아무 흔적도 남기지 않는다. 로그에 남기지 않으면 계획이
+    # 조용히 사라진 것과 구분되지 않는다.
+    _publish_plan(station, "plan_decided", stored)
+    return stored.as_json()
 
 
 @router.post("/sessions/{session_id}/planned")

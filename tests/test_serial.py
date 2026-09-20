@@ -135,6 +135,35 @@ def test_matching_hash_connects(config, clock, port):
     assert port.written[0] == "H"
 
 
+def test_a_connected_device_remembers_the_verified_hash(config, clock, port):
+    """`GET /api/device/status` 가 이것을 보고 일치 여부를 낸다 (PRD 11장)."""
+    dev = build(config, clock, port)
+    assert dev.verified_calibration_hash is None
+    dev.connect()
+    assert dev.verified_calibration_hash == calibration_hash(config)
+
+
+def test_disconnecting_forgets_the_verified_hash(config, clock, port):
+    """대조 결과는 연결에 딸린 사실이다.
+
+    끊긴 뒤에도 남겨 두면 "지금 손에 올라간 펌웨어가 맞다" 를 근거 없이
+    주장하게 된다.
+    """
+    dev = build(config, clock, port)
+    dev.connect()
+    dev.disconnect()
+    assert dev.verified_calibration_hash is None
+
+
+def test_a_refused_connection_leaves_no_verified_hash(config, clock):
+    """불일치는 이 속성에 담기지 않는다. 연결이 거부되기 때문이다."""
+    port = FakePort(clock, hash_value="deadbeef")
+    dev = build(config, clock, port)
+    with pytest.raises(CalibrationMismatchError):
+        dev.connect()
+    assert dev.verified_calibration_hash is None
+
+
 def test_mismatched_hash_refuses_to_connect(config, clock):
     """펌웨어 재업로드를 잊은 상태다. 연결 자체를 거부한다."""
     port = FakePort(clock, hash_value="deadbeef")

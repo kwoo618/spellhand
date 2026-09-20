@@ -129,6 +129,51 @@ def test_device_status_reports_the_lock_holder(client):
     assert status["busy"] is False
 
 
+def test_device_status_says_the_hash_check_does_not_apply_to_mock(client, station):
+    """Mock 에는 펌웨어가 없다. 대조할 상대가 없는 것이지 틀린 것이 아니다.
+
+    `calibration_hash_ok` 에 "n/a" 같은 문자열을 넣지 않는다 — 이름이 `_ok` 이므로
+    호출자가 `if not ok:` 로 읽을 것이고, 그러면 "해당 없음" 과 "불일치" 가 같은
+    분기로 들어간다. 이 필드가 막으려는 사고가 바로 그것이다 (DECISIONS §48).
+    """
+    from server.calibration import calibration_hash
+
+    status = client.get("/api/device/status").json()
+    assert status["calibration_hash"] == calibration_hash(station.config)
+    assert status["calibration_hash_ok"] is None
+    assert status["calibration_hash_state"] == "not_applicable"
+
+
+def test_device_status_reports_a_verified_hash_in_serial_mode(client, station):
+    """serial 모드에서 연결이 살아 있으면 대조를 통과한 상태다.
+
+    `mismatch` 는 살아 있는 서버에서 나오지 않는다 — `connect()` 가 연결을
+    거부하므로 서버가 기동하지 못한다 (DECISIONS §35, §48).
+    """
+    from server.calibration import calibration_hash
+    from server.device import DEVICE_MODE_SERIAL
+
+    expected = calibration_hash(station.config)
+
+    class Verified:
+        """해시 대조를 통과한 시리얼 어댑터. 상태 조회에 필요한 만큼만 흉내낸다."""
+
+        verified_calibration_hash = expected
+        is_busy = False
+
+    station.device_mode = DEVICE_MODE_SERIAL
+    station.device = Verified()  # type: ignore[assignment]
+    status = client.get("/api/device/status").json()
+    assert status["calibration_hash_ok"] is True
+    assert status["calibration_hash_state"] == "ok"
+
+    # 끊긴 뒤에는 지금 손에 올라간 펌웨어를 알지 못한다.
+    Verified.verified_calibration_hash = None  # type: ignore[assignment]
+    status = client.get("/api/device/status").json()
+    assert status["calibration_hash_ok"] is None
+    assert status["calibration_hash_state"] == "unknown"
+
+
 def test_device_stop_returns_to_safe(client, station):
     start(client)
     assert client.post("/api/device/stop").json()["status"] == "stopped"

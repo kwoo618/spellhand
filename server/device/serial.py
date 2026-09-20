@@ -107,6 +107,9 @@ class SerialDevice(DeviceAdapter):
         self._busy = False
         self._seq = 0
         self._arrival_at: Optional[datetime] = None
+        # 핸드셰이크에서 대조를 통과한 펌웨어 해시. 연결되어 있지 않으면 None 이다.
+        # `GET /api/device/status` 가 이것을 보고 일치 여부를 낸다 (PRD 11장).
+        self._verified_hash: Optional[str] = None
         # 비상 정지가 걸렸는가. 진행 중인 명령이 이것을 보고 물러난다.
         self._cancelled = False
 
@@ -143,6 +146,7 @@ class SerialDevice(DeviceAdapter):
         self._connected = True
         self._busy = False
         self._arrival_at = None
+        self._verified_hash = reported
         logger.info(
             "serial device connected on %s (CAL_HASH %s, seq from %d)",
             self._port,
@@ -165,6 +169,9 @@ class SerialDevice(DeviceAdapter):
     def disconnect(self) -> None:
         self._connected = False
         self._busy = False
+        # 대조 결과는 연결에 딸린 사실이다. 끊긴 뒤에도 남겨 두면 "지금 손에 올라간
+        # 펌웨어가 맞다" 를 근거 없이 주장하게 된다.
+        self._verified_hash = None
         self._close_transport()
 
     def _close_transport(self) -> None:
@@ -183,6 +190,16 @@ class SerialDevice(DeviceAdapter):
     @property
     def is_connected(self) -> bool:
         return self._connected
+
+    @property
+    def verified_calibration_hash(self) -> Optional[str]:
+        """핸드셰이크에서 대조를 통과한 펌웨어 해시. 연결 전·후에는 None.
+
+        값이 있다는 것은 **그 해시로 대조가 통과했다**는 뜻이다. 불일치는 여기에
+        담기지 않는다 — `connect()` 가 예외를 던지고 연결을 닫기 때문이다
+        (DECISIONS.md §35).
+        """
+        return self._verified_hash
 
     def last_arrival_at(self) -> Optional[datetime]:
         """`RDY` 를 받은 시각. 관측 시간의 기준점이다 (DECISIONS.md §36)."""

@@ -904,6 +904,90 @@ def test_ending_the_session_closes_the_planned_route(http, station):
         station.plans.for_session(session_id)
 
 
+# --------------------------------------------------------------------------- #
+# HITL 이 로그 패널에 남는가 (시연 ⑥ 라이브 정지)
+# --------------------------------------------------------------------------- #
+
+def log_events(http, count):
+    """`/ws/mcp-log` 가 진단 뷰로 보낸 것을 그대로 읽는다."""
+    with http.websocket_connect("/ws/mcp-log") as socket:
+        return [socket.receive_json() for _ in range(count)]
+
+
+def test_making_a_plan_announces_that_it_is_waiting(http):
+    """승인 대기 자체가 로그에 남아야 한다.
+
+    남지 않으면 패널에 아무것도 없다가 승인 뒤에 갑자기 구동 호출이 통과하는
+    것처럼 보이고, "멈췄다 → 사람이 승인했다 → 그래서 움직인다" 가 끊긴다.
+    """
+    body = make_plan(http)
+    event = log_events(http, 1)[0]
+    assert event["type"] == "plan_ready"
+    assert event["plan_id"] == body["plan_id"]
+    assert event["status"] == "pending"
+    assert event["session_id"] is None
+    assert event["items"] == len(body["items"])
+    assert event["estimated_seconds"] == body["estimated_seconds"]
+    assert event["source"] == SOURCE_LLM
+
+
+def test_approving_announces_the_session_it_created(http, station):
+    plan_id = make_plan(http)["plan_id"]
+    approved = http.post(f"/api/agent/plans/{plan_id}/approve").json()
+
+    ready, decided = log_events(http, 2)
+    assert ready["type"] == "plan_ready"
+    assert decided["type"] == "plan_decided"
+    assert decided["status"] == "approved"
+    assert decided["session_id"] == approved["session_id"]
+
+
+def test_rejecting_announces_that_nothing_was_created(http, station):
+    """거부는 이것 말고는 아무 흔적도 남기지 않는다."""
+    plan_id = make_plan(http)["plan_id"]
+    http.post(f"/api/agent/plans/{plan_id}/reject")
+
+    decided = log_events(http, 2)[1]
+    assert decided["type"] == "plan_decided"
+    assert decided["status"] == "rejected"
+    assert decided["session_id"] is None
+    assert station.controllers == {}
+
+
+def test_a_refused_decision_announces_nothing(http, station):
+    """이미 결정된 계획을 다시 결정하려 해도 로그가 늘지 않는다.
+
+    소켓에서 "오지 않음" 을 기다릴 수는 없다 (`receive_json` 에 타임아웃이 없어
+    영원히 막힌다). 그래서 표식을 하나 흘리고, 그것이 **바로 다음**에 오는 것으로
+    사이에 아무것도 없었음을 증명한다.
+    """
+    plan_id = make_plan(http)["plan_id"]
+    http.post(f"/api/agent/plans/{plan_id}/reject")
+    assert http.post(f"/api/agent/plans/{plan_id}/approve").status_code == 409
+
+    http.post("/api/mcp-log", json={"type": "tool_call", "name": "sentinel"})
+    events = log_events(http, 3)
+    assert [e["type"] for e in events] == ["plan_ready", "plan_decided", "tool_call"]
+    assert events[2]["name"] == "sentinel"
+
+
+def test_the_rule_fallback_says_so_in_the_log(config, clock):
+    """규칙 폴백이 돌았는지가 계획 하나에 대해 가장 먼저 알아야 할 사실이다."""
+    station = build_station(
+        config_path=REAL_POSES,
+        words_path=REAL_WORDS,
+        database=Database.in_memory(),
+        device=MockDevice(config, sleep=clock.sleep),
+        clock=clock,
+        background=lambda work: work(),
+        llm=BrokenLlm(),
+    )
+    with TestClient(create_app(station)) as http:
+        make_plan(http)
+        event = log_events(http, 1)[0]
+        assert event["source"] == SOURCE_RULE
+
+
 def test_the_session_plan_matches_the_approved_item_count(http, station):
     """세션의 칸이 계획보다 넓으면 계획 밖의 문항이 들어갈 자리가 생긴다."""
     plan_id = make_plan(http, discrimination_items=2, word_items=1)["plan_id"]

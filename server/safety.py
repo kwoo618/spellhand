@@ -4,11 +4,17 @@
 
 ```
 요청 → ① 세션 락 → ② 글자 존재 → ③ 커리큘럼 → ④ flex 조회·clamp
-     → ⑤ 각도 변환·clamp → ⑥ rate limit → ⑦ 디바이스 idle → ⑧ 캘리브레이션 해시
+     → ⑤ 각도 변환·clamp → ⑥ rate limit → ⑦ 디바이스 idle → 전송
 ```
 
-⑧ 은 `tools/gen_calibration.py` 가 없어 아직 구현되지 않았다. 자리를 비워 두고
-`serial` 모드가 생길 때 채운다. 빈 껍데기를 만들지 않는다.
+**⑧ 캘리브레이션 해시는 여기 없다.** PRD 10장은 ⑧ 을 요청 단위 게이트로 적었지만,
+구현은 `SerialDevice.connect()` 의 핸드셰이크에 있다 — 불일치면 **연결 자체를
+거부**하고 서버가 기동하지 못한다 (DECISIONS.md §35, §48).
+
+요청 단위로 옮기지 않는 이유: 게이트는 첫 구동 요청에서야 돌아간다. 그전에
+기동·유휴 복귀로 나가는 안전 자세·중립 자세는 게이트를 지나지 않으므로, 해시가
+틀린 펌웨어에 이미 잘못된 각도가 나간 뒤에 처음 검사하게 된다. 연결 시점 거부는
+그 창을 아예 없앤다.
 
 거부는 전부 `SafetyError` 하위 예외다. 각 예외는 `code` 와 `http_status` 를
 들고 있어 상위 계층이 문자열을 새로 지어낼 필요가 없다.
@@ -376,8 +382,9 @@ class SafetyGate:
                 "the device is still moving; wait for the current motion to finish"
             )
 
-        # ⑧ 캘리브레이션 해시 — tools/gen_calibration.py 이후. serial 모드가
-        #    생길 때 여기에 들어간다.
+        # ⑧ 캘리브레이션 해시는 이 경로에 없다. `SerialDevice.connect()` 가
+        #    핸드셰이크에서 대조하고 불일치면 연결을 거부한다 — 여기까지 왔다면
+        #    해시는 이미 맞다 (DECISIONS.md §35, §48). 자리표시자를 두지 않는다.
 
         self._last_request_at = now
         self._request_counts[session_id] = used + 1
