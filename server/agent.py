@@ -1019,18 +1019,28 @@ class AnthropicClient:
         self._api_key = api_key
 
     def _anthropic(self) -> Any:
+        """SDK 클라이언트를 만든다.
+
+        **키를 직접 확인하지 않는다.** SDK 가 `ANTHROPIC_API_KEY` →
+        `ANTHROPIC_AUTH_TOKEN` → 로그인 프로파일 순으로 자격증명을 찾는다.
+        여기서 환경변수만 보고 거절하면, 프로파일로 로그인한 기계에서 쓸 수
+        있는 자격증명을 두고 폴백으로 내려간다.
+        """
         if self._client is not None:
             return self._client
         try:
             import anthropic
         except ImportError as exc:  # pragma: no cover - 의존성 누락
             raise LlmUnavailableError(f"the anthropic package is missing: {exc}")
-        key = self._api_key or os.environ.get("ANTHROPIC_API_KEY")
-        if not key:
+
+        key = self._api_key or os.environ.get("ANTHROPIC_API_KEY") or None
+        try:
+            self._client = anthropic.Anthropic(api_key=key)
+        except Exception as exc:  # noqa: BLE001 - 자격증명이 아예 없는 경우
             raise LlmUnavailableError(
-                "ANTHROPIC_API_KEY is not set; the rule fallback will be used"
-            )
-        self._client = anthropic.Anthropic(api_key=key)
+                f"no Anthropic credentials are available "
+                f"({type(exc).__name__}: {exc}); the rule fallback will be used"
+            ) from exc
         return self._client
 
     def complete(self, system: str, user: str) -> LlmReply:
