@@ -49,7 +49,7 @@ from server.device import (
 )
 from server.env import load_env
 from server.routes.api import router as api_router
-from server.routes.events import EventHub
+from server.routes.events import MCP_LOG_CHANNEL, EventHub
 from server.safety import SafetyError, SafetyGate, SessionLock
 from server.session import SessionController, SessionError
 
@@ -295,6 +295,28 @@ def create_app(station: Optional[Station] = None, **kwargs: object) -> FastAPI:
             pass
         finally:
             station.hub.unsubscribe(session_id, queue)
+
+    @app.websocket("/ws/mcp-log")
+    async def mcp_log(websocket: WebSocket) -> None:
+        """MCP 호출 로그 브로드캐스트 (PRD 11장, 시연 ⑥).
+
+        **세션과 무관하다.** 세션이 시작되기 **전에** 오는 호출과 거부 —
+        `get_capabilities`, 락 없는 `present_sequence` — 가 시연 ⑥ 의 핵심이므로
+        `/ws/session/{id}` 에 얹을 수 없다 (DECISIONS.md §46).
+
+        **단방향이다.** 이 소켓으로 들어온 것은 읽지 않는다. 로그는
+        `POST /api/mcp-log` 로만 들어오고, 그쪽도 명령 경로가 아니다.
+        """
+        await websocket.accept()
+        queue = station.hub.subscribe(MCP_LOG_CHANNEL)
+        try:
+            while True:
+                event = await queue.get()
+                await websocket.send_json(dict(event))
+        except WebSocketDisconnect:
+            pass
+        finally:
+            station.hub.unsubscribe(MCP_LOG_CHANNEL, queue)
 
     @app.websocket("/ws/device")
     async def device_flex(websocket: WebSocket) -> None:

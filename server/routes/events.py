@@ -14,9 +14,15 @@ import asyncio
 import logging
 from typing import Dict, List, Mapping, Optional, Set
 
-__all__ = ["EventHub"]
+__all__ = ["EventHub", "MCP_LOG_CHANNEL"]
 
 logger = logging.getLogger(__name__)
+
+# MCP 호출 로그는 세션에 속하지 않는다 — 세션이 시작되기 **전에** 오는 호출
+# (`get_capabilities`, 락 없는 `present_sequence` 거부)이 시연 ⑥ 의 핵심이기
+# 때문이다. 그래서 같은 허브의 별도 채널을 쓴다. 세션 id 는 SQLite
+# autoincrement 로 1부터이므로 0 과 겹치지 않는다 (DECISIONS.md §46).
+MCP_LOG_CHANNEL = 0
 
 # 구독자 큐가 이만큼 밀리면 가장 오래된 것부터 버린다. 화면이 멈춰 있는 탭
 # 하나 때문에 서버 메모리가 늘어나면 안 된다.
