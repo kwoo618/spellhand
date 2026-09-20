@@ -30,6 +30,13 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from server.agent import (
+    AgentError,
+    AnthropicClient,
+    LlmClient,
+    PlanAgent,
+    PlanStore,
+)
 from server.config import (
     DEFAULT_CONFIG_PATH,
     DEFAULT_WORDS_PATH,
@@ -82,6 +89,8 @@ class Station:
     clock: Callable[[], datetime]
     rng: random.Random
     background: Callable[[Callable[[], None]], None]
+    agent: PlanAgent
+    plans: PlanStore
     controllers: Dict[int, SessionController] = field(default_factory=dict)
 
     def new_controller(self) -> SessionController:
@@ -171,6 +180,8 @@ class Station:
             # end() 안에서도 놓지만, 그 전에 죽었을 수 있다. 보유자가 아니면
             # release() 는 아무것도 하지 않으므로 두 번 불러도 무해하다.
             self.lock.release(session_id)
+            # 끝난 세션으로는 계획을 더 집행할 수 없다.
+            self.plans.forget_session(session_id)
 
     def reset_device(self) -> Tuple[int, ...]:
         """물린 상태를 서버 재시작 없이 푼다 (PRD 11장).
@@ -211,8 +222,15 @@ def build_station(
     clock: Callable[[], datetime] = utcnow,
     rng: Optional[random.Random] = None,
     background: Optional[Callable[[Callable[[], None]], None]] = None,
+    llm: Optional[LlmClient] = None,
 ) -> Station:
-    """설정을 읽고 계층을 조립한다. 설정이 틀리면 여기서 예외가 나고 서버는 뜨지 않는다."""
+    """설정을 읽고 계층을 조립한다. 설정이 틀리면 여기서 예외가 나고 서버는 뜨지 않는다.
+
+    **`llm` 의 기본값은 None 이다.** 그 상태에서 에이전트는 규칙 폴백만 쓴다.
+    실제 모델을 물리는 곳은 서버 진입점 하나뿐이다 — 기본값으로 물려 두면
+    개발자 셸에 `ANTHROPIC_API_KEY` 가 있을 때 테스트가 돈을 쓴다
+    (DECISIONS.md §47).
+    """
     config = load_config(config_path)
     words = load_words(words_path, letters=config.poses)
 
@@ -226,6 +244,7 @@ def build_station(
     db.create_all()
     lock = SessionLock(db, clock=clock)
     gate = SafetyGate(config, device, lock, clock=clock)
+    planner_rng = rng or random.Random()
 
     return Station(
         config=config,
@@ -237,8 +256,10 @@ def build_station(
         hub=EventHub(),
         device_mode=mode,
         clock=clock,
-        rng=rng or random.Random(),
+        rng=planner_rng,
         background=background or _thread_background,
+        agent=PlanAgent(config, words, db, llm=llm, rng=planner_rng),
+        plans=PlanStore(clock=clock),
     )
 
 
@@ -275,6 +296,10 @@ def create_app(station: Optional[Station] = None, **kwargs: object) -> FastAPI:
 
     @app.exception_handler(SessionError)
     def _on_session_error(request: Request, exc: SessionError) -> JSONResponse:
+        return _rejection(exc)
+
+    @app.exception_handler(AgentError)
+    def _on_agent_error(request: Request, exc: AgentError) -> JSONResponse:
         return _rejection(exc)
 
 
@@ -405,7 +430,11 @@ def __getattr__(name: str) -> object:
         # 테스트는 이 경로를 지나지 않으므로 개발자 기계의 .env 가 새지 않는다.
         _configure_logging()
         load_env()
-        _app = create_app()
+        # 실제 모델을 물리는 곳도 여기 하나다. `build_station()` 의 기본값으로
+        # 두면 개발자 셸의 API 키가 테스트로 새어 들어가 돈을 쓴다
+        # (DECISIONS.md §47). 키가 없으면 `AnthropicClient` 는 호출 시점에
+        # 실패하고 에이전트가 규칙 폴백으로 내려간다.
+        _app = create_app(build_station(llm=AnthropicClient()))
     return _app
 
 

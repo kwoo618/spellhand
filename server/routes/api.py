@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from fastapi import APIRouter, Body, Query, Request
 from sqlalchemy import select
 
+from server.agent import PlanStateError
 from server.db import (
     BOUNDARIES,
     BOUNDARY_EXPLICIT,
@@ -36,6 +37,7 @@ from server.session import (
     AnswerOutcome,
     ItemPrompt,
     SessionController,
+    SessionFinishedError,
     SessionPlan,
     SessionStateError,
 )
@@ -361,6 +363,8 @@ def end_session(request: Request, session_id: int) -> Dict[str, Any]:
     controller = _controller(request, session_id)
     summary = controller.end()
     station.controllers.pop(session_id, None)
+    # 끝난 세션으로는 계획을 더 집행할 수 없다.
+    station.plans.forget_session(session_id)
     return _summary_payload(summary)
 
 
@@ -781,3 +785,130 @@ def publish_mcp_log(
     )
     station.hub.publish(MCP_LOG_CHANNEL, event)
     return {"status": "published", "type": type_}
+
+
+# --------------------------------------------------------------------------- #
+# 에이전트 — 계획 생성과 HITL 승인 (PRD 11장, 13.3)
+# --------------------------------------------------------------------------- #
+
+@router.post("/agent/plan", status_code=201)
+def create_plan(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """자연어 요청을 세션 계획으로 바꾼다. **실행하지 않는다.**
+
+    검증 10항목을 통과해도 세션은 만들어지지 않는다 (PRD 13.3). 승인 대기
+    상태가 시연 ⑥ 의 "라이브 정지" 항목이다. 세션은
+    `/api/agent/plans/{id}/approve` 에서만 생긴다.
+
+    LLM 을 부를 수 없거나 재생성 2회가 실패하면 규칙 폴백으로 내려간다
+    (PRD 13.4). 그때도 응답 형식은 같고 `source` 가 `rule` 이 된다.
+    """
+    station = _station(request)
+    learner_name = str(body.get("learner_name") or "").strip()
+    if not learner_name:
+        raise SessionStateError("learner_name is required")
+    prompt = str(body.get("request") or "").strip()
+    if not prompt:
+        raise SessionStateError("request is required")
+
+    default = SessionPlan()
+    plan, report, attempts = station.agent.plan(
+        learner_name,
+        prompt,
+        discrimination_items=int(
+            body.get("discrimination_items", default.discrimination_items)
+        ),
+        word_items=int(body.get("word_items", default.word_items)),
+    )
+    stored = station.plans.add(learner_name, prompt, plan, report, attempts)
+    return stored.as_json()
+
+
+@router.post("/agent/plans/{plan_id}/approve", status_code=201)
+def approve_plan(request: Request, plan_id: int) -> Dict[str, Any]:
+    """사람이 승인한다. **여기서 처음으로 세션이 생긴다** (PRD 13.3).
+
+    세션의 문항 칸은 승인된 계획의 문항 수와 같다 — 더 열면 계획 밖의 문항이
+    들어갈 자리가 생긴다. 이미 승인·거부된 계획은 다시 결정할 수 없다.
+
+    `source` 는 계획을 만든 쪽이다 (`llm` 또는 `rule`). 4주차 실데이터에서
+    어느 계획자가 만든 세션인지 구분하기 위한 것이다.
+    """
+    station = _station(request)
+    stored = station.plans.pending(plan_id)
+    if not stored.plan.items:
+        raise PlanStateError(
+            f"plan {plan_id} has no item left after validation; "
+            f"make a new plan instead of approving an empty one"
+        )
+
+    controller = station.new_controller()
+    session_id = controller.start(
+        stored.learner_name,
+        plan=stored.plan.as_session_plan(),
+        source=stored.plan.source,
+    )
+    station.controllers[session_id] = controller
+    station.plans.approve(plan_id, session_id)
+    payload = stored.as_json()
+    payload["total_items"] = controller.total_items
+    payload["state"] = controller.state
+    return payload
+
+
+@router.post("/agent/plans/{plan_id}/reject")
+def reject_plan(request: Request, plan_id: int) -> Dict[str, Any]:
+    """사람이 거부한다. 세션은 만들어지지 않는다."""
+    station = _station(request)
+    return station.plans.reject(plan_id).as_json()
+
+
+@router.post("/sessions/{session_id}/planned")
+def present_planned(request: Request, session_id: int) -> Dict[str, Any]:
+    """**승인된 계획의** 다음 문항을 표현한다 (HITL 이후의 유일한 구동 경로).
+
+    글자열이 계획에서 나오므로 승인되지 않은 문항이 이 경로로 나갈 수 없다.
+    `/sequence` 는 호출자가 글자를 준다 — 그쪽은 MCP·에이전트의 자유 구동이고
+    이쪽은 승인의 집행이다 (DECISIONS.md §47).
+
+    오답 1회 뒤 재생 대기 중이면 **같은 문항**을 다시 낸다. 큐에서 빼지 않으므로
+    재생이 건너뛰어지지 않는다 (기획서 5.2).
+
+    **동기다.** `/sequence` 와 같은 이유로 손이 끝날 때까지 돌려주지 않는다
+    (DECISIONS.md §46.2). 거부되면 문항이 큐에 그대로 남아 다시 시도할 수 있다.
+    """
+    station = _station(request)
+    _require_lock(station, session_id)
+    controller = _controller(request, session_id)
+    stored = station.plans.for_session(session_id)
+
+    replay = controller.awaiting_replay
+    if replay:
+        item = stored.last
+        if item is None:
+            raise SessionStateError(
+                f"session {session_id} is awaiting a replay but no planned item "
+                f"has been presented yet"
+            )
+    else:
+        if not stored.queue:
+            raise SessionFinishedError(
+                f"the approved plan for session {session_id} has no item left"
+            )
+        item = stored.queue[0]
+
+    prompt = controller.present_letters(
+        item.letters,
+        track=item.track,
+        hold_ms=_clamp_hold_ms(station, item.hold_ms),
+        boundary=item.boundary,
+    )
+    # 손이 실제로 표현한 뒤에 큐에서 뺀다. 거부되면 같은 문항으로 다시 부를 수 있다.
+    if not replay:
+        stored.queue.pop(0)
+    stored.last = item
+
+    payload = _prompt_payload(prompt, controller)
+    payload["status"] = "presented"
+    payload["plan_id"] = stored.plan_id
+    payload["remaining_items"] = len(stored.queue)
+    return payload

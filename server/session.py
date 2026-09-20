@@ -421,6 +421,17 @@ class SessionController:
         """현재 문항에 대해 시범이 나온 적이 있는가. 재생 가능 여부다."""
         return self._last_demo is not None
 
+    @property
+    def awaiting_replay(self) -> bool:
+        """오답 1회 뒤 **같은 문항**을 다시 내야 하는 상태인가.
+
+        `state` 로는 알 수 없다 — 재생 대기도 새 문항 대기도 `AWAITING_ITEM`
+        이다. 밖에서 문항을 고르는 호출자(에이전트·MCP)는 이것을 봐야 한다.
+        재생 대기 중에 다른 글자열을 내면 `present_letters()` 가 거부한다
+        (DECISIONS.md §47).
+        """
+        return self._retry_pending
+
     def _active_answer(self) -> str:
         """서버 내부용 정답. **라우트는 절대 호출하지 않는다** (DECISIONS §22)."""
         if self._active_key is None:
