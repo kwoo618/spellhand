@@ -31,7 +31,11 @@ from server.db import (
 __all__ = [
     "TrackSummary",
     "PairCount",
+    "HoldBucket",
+    "ItemRecord",
     "track_summary",
+    "accuracy_by_hold_ms",
+    "recent_items",
     "confusion_counts",
     "weakest_pairs",
     "depth_unlocked",
@@ -73,6 +77,46 @@ class TrackSummary:
         if not self.answered:
             return None
         return self.order_errors / self.answered
+
+
+@dataclass(frozen=True)
+class HoldBucket:
+    """한 유지 시간에서의 성적 (PRD 12.1 `accuracy_by_hold_ms`).
+
+    ①축(유지 시간)을 더 내려도 되는지 판단하는 근거다. 버킷을 묶지 않고 실제로
+    출제된 `hold_ms` 값 그대로 센다 — 사다리가 설정값에서 나오므로(§7) 구간을
+    여기서 새로 정의하면 설정과 어긋난다.
+    """
+
+    hold_ms: int
+    answered: int
+    correct: int
+
+    @property
+    def accuracy(self) -> Optional[float]:
+        if not self.answered:
+            return None
+        return self.correct / self.answered
+
+
+@dataclass(frozen=True)
+class ItemRecord:
+    """출제·채점된 문항 하나 (PRD 12.1 "최근 20문항").
+
+    `letters` 가 들어 있다. 이것은 **진단·에이전트용** 표현이고 학습자 화면으로
+    가는 `ItemPrompt` 가 아니다 — 정답 분리는 학습자에게 적용되는 규칙이다
+    (DECISIONS.md §22). 혼동 행렬이 이미 글자를 내보내고 있는 것과 같은 범위다.
+    """
+
+    seq: int
+    track: str
+    letters: str
+    hold_ms: int
+    boundary: str
+    attempt: int
+    answer: Optional[str]
+    result: Optional[str]
+    response_ms: Optional[float]
 
 
 @dataclass(frozen=True)
@@ -150,6 +194,71 @@ def track_summary(
         avg_response_ms=(
             sum(response_times) / len(response_times) if response_times else None
         ),
+    )
+
+
+def accuracy_by_hold_ms(
+    db: DbSession,
+    track: str,
+    *,
+    session_id: Optional[int] = None,
+    learner_id: Optional[int] = None,
+) -> Tuple[HoldBucket, ...]:
+    """유지 시간별 정확도, 유지 시간이 긴 것부터 (PRD 12.1).
+
+    `track` 은 필수다. 두 트랙을 합친 버킷은 만들지 않는다 — 단어 트랙의 정답은
+    철자 지식으로 보정되므로 같은 버킷에 넣으면 ①축 판단이 오염된다.
+    """
+    items = _answered_items(
+        db, track, session_id=session_id, learner_id=learner_id
+    )
+
+    tally: Dict[int, List[Item]] = {}
+    for item in items:
+        tally.setdefault(item.hold_ms, []).append(item)
+
+    return tuple(
+        HoldBucket(
+            hold_ms=hold_ms,
+            answered=len(bucket),
+            correct=sum(1 for i in bucket if i.result == RESULT_CORRECT),
+        )
+        for hold_ms, bucket in sorted(tally.items(), reverse=True)
+    )
+
+
+def recent_items(
+    db: DbSession,
+    track: str,
+    *,
+    limit: int,
+    session_id: Optional[int] = None,
+    learner_id: Optional[int] = None,
+) -> Tuple[ItemRecord, ...]:
+    """최근 채점된 문항들, 최신순 (PRD 12.1).
+
+    `track` 은 필수다. 두 트랙을 한 목록에 섞지 않는다.
+    """
+    items = _answered_items(
+        db, track, session_id=session_id, learner_id=learner_id, limit=limit
+    )
+    return tuple(
+        ItemRecord(
+            seq=item.seq,
+            track=item.track,
+            letters=item.letters,
+            hold_ms=item.hold_ms,
+            boundary=item.boundary,
+            attempt=item.attempt,
+            answer=item.answer,
+            result=item.result,
+            response_ms=(
+                (item.answered_at - item.ready_at).total_seconds() * 1000
+                if item.answered_at is not None and item.ready_at is not None
+                else None
+            ),
+        )
+        for item in items
     )
 
 
