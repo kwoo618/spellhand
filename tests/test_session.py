@@ -20,10 +20,15 @@ from server.db import (
     Item,
     TrainingSession,
 )
-from server.device import DeviceProtocolError
+from server.device import DeviceCancelledError, DeviceProtocolError
 from server.device.mock import MockDevice
 from server.items import Difficulty
-from server.safety import LockUnavailableError, SafetyGate, SessionLock
+from server.safety import (
+    DeviceNotIdleError,
+    LockUnavailableError,
+    SafetyGate,
+    SessionLock,
+)
 from server.session import (
     DIFFICULTY_LADDER,
     HOLD_DECAY_ON_CORRECT,
@@ -1139,3 +1144,73 @@ def test_two_learners_do_not_share_progress(runner, db, config):
     )
     fresh = first_prompt_of(runner, learner="mina", discrimination_items=1, word_items=0)
     assert fresh.hold_ms == config.timing.hold_default_ms
+# --------------------------------------------------------------------------- #
+# 구동은 겹치지 않는다 (DECISIONS §50.4) — 이 테스트는 완화하지 않는다
+# --------------------------------------------------------------------------- #
+
+def test_a_drive_that_overlaps_another_is_refused(config, words, db, clock):
+    """구동 중에 들어온 구동은 `DEVICE_BUSY` 로 거부된다. 기다리지 않는다.
+
+    디바이스의 busy 검사만으로는 부족하다. 거부되는 구동은 `except` 에서
+    상태를 되돌리는데, 되돌림이 끝나기 전에 다음 호출이 들어오면 되돌림이
+    다음 호출의 상태를 덮어쓴다. 그러면 `_active_spec` 이 `None` 인 채
+    `AWAITING_ANSWER` 가 되어 `_prompt()` 가 터진다.
+    """
+    caught = []
+
+    def reentrant_sleep(seconds):
+        clock.advance(seconds)
+        if not caught:
+            # 손이 움직이는 도중에 같은 컨트롤러로 다시 구동을 건다.
+            try:
+                controller.present()
+            except Exception as exc:  # noqa: BLE001 - 종류를 기록만 한다
+                caught.append(exc)
+            else:
+                caught.append(None)
+
+    device = MockDevice(config, sleep=reentrant_sleep)
+    device.connect()
+    lock = SessionLock(db, clock=clock)
+    gate = SafetyGate(config, device, lock, clock=clock)
+    controller = SessionController(
+        config, words, db, device, gate, lock, clock=clock,
+        rng=random.Random(1),
+    )
+    controller.start("haru")
+    controller.next_item()
+    controller.present()
+
+    assert caught, "겹친 구동이 실제로 시도되어야 한다"
+    assert isinstance(caught[0], DeviceNotIdleError)
+    # 바깥 구동은 정상으로 끝났다. 겹친 쪽이 물러난 것이다.
+    assert controller.state == "awaiting_answer"
+
+
+def test_a_cancelled_drive_leaves_a_readable_item(config, words, db, clock):
+    """취소된 구동의 되돌림이 끝난 뒤 상태는 읽을 수 있어야 한다.
+
+    `/api/sessions/open` 이 이 값을 읽는다. 여기가 터지면 참여 조회가 500 이
+    되고, 락을 쥔 세션이 남아 있는데 아무도 들어갈 수 없게 된다.
+    """
+    device = MockDevice(config, sleep=clock.sleep)
+    device.connect()
+    lock = SessionLock(db, clock=clock)
+    gate = SafetyGate(config, device, lock, clock=clock)
+    controller = SessionController(
+        config, words, db, device, gate, lock, clock=clock,
+        rng=random.Random(1),
+    )
+    controller.start("haru")
+    controller.next_item()
+
+    def cancel(pose, transition_ms, hold_ms):
+        raise DeviceCancelledError("cancelled by a stop before RDY")
+
+    device.move_to = cancel  # type: ignore[method-assign]
+    with pytest.raises(DeviceCancelledError):
+        controller.present()
+
+    # 문항은 그대로 걸려 있고, 다시 낼 수 있다.
+    assert controller.state == "awaiting_present"
+    assert controller.current_prompt().seq == 1

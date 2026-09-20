@@ -142,6 +142,12 @@ class Station:
         서보 동작은 물리적으로 블로킹이다 (DECISIONS.md §14). HTTP 요청을
         15초 붙잡아 두는 대신 즉시 돌려주고, 진행 상황은 WS 로 알린다.
         실패도 WS 로 나간다 — 요청은 이미 끝났기 때문이다.
+
+        **실패 이벤트는 `session_alive` 를 싣는다.** 세 갈래가 겉보기에 같은
+        `{"type":"error","code":...}` 로 나가는데, 세션이 살아 있는지는
+        갈래마다 다르다 — 정지·거부는 살아 있고 예상 못 한 실패는 닫힌다.
+        화면이 코드 목록으로 그것을 추측하면 코드를 하나 더할 때마다 학습자가
+        막힌다. 실제로 막혔다 (DECISIONS.md §50).
         """
 
         def guarded() -> None:
@@ -154,7 +160,12 @@ class Station:
                 logger.info("presentation cancelled by a stop: %s", exc)
                 self.hub.publish(
                     session_id,
-                    {"type": "error", "code": "STOPPED", "detail": str(exc)},
+                    {
+                        "type": "error",
+                        "code": "STOPPED",
+                        "detail": str(exc),
+                        "session_alive": True,
+                    },
                 )
             except (SafetyError, SessionError) as exc:
                 # 거부다. 아무것도 구동되지 않았고 세션은 그대로 살아 있다.
@@ -162,7 +173,8 @@ class Station:
                 # REST 거부와 **같은 몸통**이다. 같은 사실이 두 경로로 다르게
                 # 나가면 화면이 한쪽에서만 문구를 만들 수 있게 된다.
                 self.hub.publish(
-                    session_id, {"type": "error", **rejection_body(exc)}
+                    session_id,
+                    {"type": "error", **rejection_body(exc), "session_alive": True},
                 )
             except Exception as exc:  # noqa: BLE001 - 스레드가 조용히 죽지 않게
                 # 예상하지 못한 실패다 — 손이 대답하지 않거나 버그다. 어느
@@ -177,7 +189,12 @@ class Station:
                 )
                 self.hub.publish(
                     session_id,
-                    {"type": "error", "code": code, "detail": str(exc)},
+                    {
+                        "type": "error",
+                        "code": code,
+                        "detail": str(exc),
+                        "session_alive": False,
+                    },
                 )
                 self.abort_session(session_id)
 
@@ -319,6 +336,26 @@ def create_app(station: Optional[Station] = None, **kwargs: object) -> FastAPI:
     @app.exception_handler(AgentError)
     def _on_agent_error(request: Request, exc: AgentError) -> JSONResponse:
         return _rejection(exc)
+
+    # 동기 구동 경로(`/planned` · `/sequence` · `/demo-letter`)는 백그라운드를
+    # 거치지 않으므로 `run_in_background` 의 갈래 처리가 걸리지 않는다. 정지가
+    # 걸리면 `DeviceCancelledError` 가 라우트 밖으로 나가 **500 + 비 JSON
+    # 응답**이 됐고, 화면의 `JSON.parse` 가 거기서 터졌다 (DECISIONS.md §50.3).
+    #
+    # 몸통과 코드를 WS 갈래와 **같게** 맞춘다. 정지는 통신 오류가 아니므로
+    # 세션도 락도 그대로 두고, 거부된 문항은 큐에 남는다.
+    @app.exception_handler(DeviceCancelledError)
+    def _on_cancelled(
+        request: Request, exc: DeviceCancelledError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "code": "STOPPED",
+                "detail": str(exc),
+                "session_alive": True,
+            },
+        )
 
 
     @app.websocket("/ws/session/{session_id}")

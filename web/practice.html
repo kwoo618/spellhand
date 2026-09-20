@@ -129,10 +129,20 @@
 
   <!-- 시작 -->
   <section id="startPanel">
+    <!-- 선생님이 승인한 세션이 열려 있을 때만 나온다. 이때 이름 입력은 숨는다 -->
+    <div id="joinBox" hidden>
+      <p class="note" id="joinNote"></p>
+      <div class="row">
+        <button class="primary" id="joinBtn">시작</button>
+      </div>
+    </div>
+
+    <div id="newBox">
     <label for="name">이름</label>
     <input type="text" id="name" autocomplete="off" style="letter-spacing:normal;text-transform:none">
     <div class="row">
       <button class="primary" id="startBtn">세션 시작</button>
+    </div>
     </div>
     <p class="note" id="startNote"></p>
   </section>
@@ -197,6 +207,12 @@ const state = {
   prompt: null,
   socket: null,
   demoAvailable: false,
+  // 참여할 수 있는 세션. `GET /api/sessions/open` 이 준 것을 그대로 들고 있다.
+  open: null,
+  // 승인된 계획에서 온 세션인가. 문항을 어디서 받는지가 이것으로 갈린다.
+  planned: false,
+  // 지금 문항이 손까지 도착했는가. 정지로 중간에 끊기면 false 로 남는다.
+  landed: false,
 };
 
 function show(id, visible) { el(id).hidden = !visible; }
@@ -281,7 +297,18 @@ async function call(method, path, body) {
     body: body ? JSON.stringify(body) : undefined,
   });
   const text = await response.text();
-  const payload = text ? JSON.parse(text) : {};
+  // 서버가 구조화되지 않은 몸통을 낼 수도 있다 — 잡히지 않은 예외의 500 이
+  // 그렇다. 여기서 `JSON.parse` 가 터지면 학습자에게 파서 오류가 그대로
+  // 보인다. 실제로 보였다 (DECISIONS §50.3).
+  let payload = {};
+  if (text) {
+    try {
+      payload = JSON.parse(text);
+    } catch (err) {
+      console.warn("응답이 JSON 이 아니다", response.status, text.slice(0, 500));
+      payload = {};
+    }
+  }
   if (!response.ok) throw rejection(payload, response);
   return payload;
 }
@@ -301,6 +328,7 @@ function openSocket(sessionId) {
 function handleEvent(event) {
   switch (event.type) {
     case "presenting":
+      state.landed = false;
       el("dot").classList.add("live");
       el("status").textContent =
         event.attempt > 1 ? "다시 표현 중 — 천천히 봅니다" : "표현 중";
@@ -313,6 +341,7 @@ function handleEvent(event) {
     case "done":
       el("dot").classList.remove("live");
       el("status").textContent = "읽은 글자를 입력하세요";
+      state.landed = true;
       setMoving(false);
       setAnswering(true);
       break;
@@ -330,6 +359,12 @@ function handleEvent(event) {
         // WS 거부도 REST 와 같은 몸통이다. 같은 표에서 문구를 꺼낸다.
         console.warn(`[${event.code}] ${event.detail || ""}`, event);
         setError(learnerText(event.code, event));
+        // 세션이 살아 있으면 이어 갈 길을 남긴다. **여기서 길을 주지 않으면
+        // 학습자에게 누를 것이 하나도 없다** — `present()` 가 다시 보기를
+        // 비활성화한 채로 끝나기 때문이다. 실제로 그렇게 막혔다 (§50).
+        // 살았는지 죽었는지는 서버가 `session_alive` 로 말해 준다. 코드
+        // 목록으로 추측하면 코드를 하나 더할 때마다 다시 막힌다.
+        if (event.session_alive) showStalled();
       }
       break;
   }
@@ -353,9 +388,101 @@ function showStopped() {
   el("replayBtn").disabled = false;
 }
 
+/**
+ * 거부로 문항이 나가지 못했을 때의 표시. 세션은 살아 있다.
+ *
+ * 정지와 문구를 갈라 둔다 — 정지는 사람이 한 것이고 이쪽은 서버가 막은
+ * 것이다. 같은 문구를 쓰면 학습자가 자기가 무언가 눌렀다고 생각한다.
+ * 오류 자리(`setError`)는 호출한 쪽이 이미 채웠으므로 건드리지 않는다.
+ */
+function showStalled() {
+  el("status").textContent = "문항이 나가지 못했습니다 — [다시 보기] 로 다시 시도합니다";
+  el("replayBtn").disabled = false;
+}
+
 // --------------------------------------------------------------------- //
 // 흐름
 // --------------------------------------------------------------------- //
+
+// --------------------------------------------------------------------- //
+// 열린 세션에 참여 — 승인된 계획이 버려지지 않게 (DECISIONS §50)
+// --------------------------------------------------------------------- //
+
+/**
+ * 열린 세션을 얼마나 자주 물어보는가.
+ *
+ * **짧게 잡지 않는다.** 이것은 선생님이 승인 버튼을 누르는 것을 기다리는
+ * 것이고, 사람의 동작이다. 손이 움직이는 것을 따라가는 것이 아니다. 시작
+ * 화면에 있을 때만 돌고, 참여하거나 새 세션을 내면 멈춘다.
+ *
+ * heartbeat(10초)와 같은 주기로 뒀다 — 화면이 서버에 말을 거는 간격이 두
+ * 가지로 갈리면 무엇이 얼마나 자주 나가는지 읽기 어려워진다.
+ */
+const OPEN_POLL_MS = 10000;
+let openPoll = null;
+
+function stopOpenPoll() {
+  if (openPoll) { clearInterval(openPoll); openPoll = null; }
+}
+
+/** 열린 세션이 있으면 참여 자리를, 없으면 이름 입력을 보인다. */
+function renderOpenSession(open) {
+  const joinable = Boolean(open && open.session_id);
+  state.open = joinable ? open : null;
+  show("joinBox", joinable);
+  show("newBox", !joinable);
+  if (!joinable) { el("joinNote").textContent = ""; return; }
+
+  // 몇 문항짜리인지까지 적는다. 선생님이 승인한 그 세션인지 학습자가
+  // 확인할 수 있어야 한다.
+  const who = open.learner_name ? `${open.learner_name} · ` : "";
+  el("joinNote").textContent =
+    `세션 ${open.session_id} 이 준비되어 있습니다 — ${who}${open.total_items}문항`;
+}
+
+async function checkOpenSession() {
+  if (state.sessionId) { stopOpenPoll(); return; }
+  try {
+    renderOpenSession(await call("GET", "/api/sessions/open"));
+  } catch (err) {
+    // 물어보다 실패한 것이다. 이름 입력을 막지 않는다 — 새 세션은 여전히
+    // 낼 수 있다. 원문은 콘솔에 남는다.
+    console.warn("could not check for an open session", err);
+  }
+}
+
+/**
+ * 이미 열린 세션으로 들어간다. **새로 만들지 않는다.**
+ *
+ * 락은 그 세션이 이미 쥐고 있다. 여기서 `POST /sessions` 를 부르면
+ * `LOCK_UNAVAILABLE` 로 막히고, 막힌 것을 풀려고 `/device/reset` 을 부르면
+ * 방금 승인한 세션이 죽는다. 그것이 §50 의 결함이었다.
+ */
+async function joinSession() {
+  const open = state.open;
+  if (!open) return;
+  setError("");
+  el("joinBtn").disabled = true;
+  stopOpenPoll();
+
+  state.sessionId = open.session_id;
+  state.total = open.total_items;
+  state.planned = Boolean(open.planned);
+  el("learner").textContent = open.learner_name || "—";
+  show("startPanel", false);
+  show("trainPanel", true);
+  openSocket(open.session_id);
+
+  // 문항이 이미 걸려 있으면 그것을 이어서 본다. 아니면 다음 문항을 낸다.
+  if (open.prompt) {
+    state.prompt = open.prompt;
+    renderCounter();
+    await present();
+  } else {
+    await nextItem();
+  }
+  el("joinBtn").disabled = false;
+}
 
 async function startSession() {
   setError("");
@@ -364,6 +491,7 @@ async function startSession() {
 
   try {
     const session = await call("POST", "/api/sessions", { learner_name: name });
+    stopOpenPoll();
     state.sessionId = session.session_id;
     state.total = session.total_items;
     el("learner").textContent = name;
@@ -383,6 +511,11 @@ async function nextItem() {
   el("demoBtn").disabled = true;
   el("answer").value = "";
 
+  // 승인된 계획에서 온 세션은 문항이 계획에서 나온다. `/planned` 는 문항을
+  // 꺼내고 손으로 표현하는 것을 한 번에 하고, **동기다** — 손이 끝난 뒤에
+  // 돌아온다 (DECISIONS §46.2). 규칙 세션은 예전대로 `/next` + `/present` 다.
+  if (state.planned) { return presentPlanned(); }
+
   try {
     state.prompt = await call("GET", `/api/sessions/${state.sessionId}/next`);
   } catch (err) {
@@ -393,6 +526,54 @@ async function nextItem() {
   }
   renderCounter();
   await present();
+}
+
+/**
+ * [다시 보기]. 어느 경로로 다시 낼지는 **문항이 도착했는지**로 갈린다.
+ *
+ * 계획 세션에서 문항이 도착하기 전에 정지가 걸리면, 그 문항은 큐에 그대로
+ * 남고 세션 상태도 `awaiting_item` 이다. 그 상태에서 `/present` 를 부르면
+ * 표현할 문항이 없다며 `SESSION_STATE` 로 거부된다 — 큐에 있는 문항을
+ * 다시 내려면 `/planned` 를 불러야 한다.
+ *
+ * 도착한 뒤의 다시 보기는 양쪽 다 `/present` 다. 지금 걸린 문항을 다시 낼
+ * 뿐이고 큐를 건드리지 않는다.
+ */
+function replayItem() {
+  if (state.planned && !state.landed) { return presentPlanned(); }
+  return present();
+}
+
+/** 계획의 다음 문항. 동기라 돌아온 시점에 손은 이미 표현을 마쳤다. */
+async function presentPlanned() {
+  setAnswering(false);
+  setMoving(true);
+  setError("");
+  el("status").textContent = "표현 준비 중";
+  try {
+    state.prompt = await call("POST", `/api/sessions/${state.sessionId}/planned`);
+  } catch (err) {
+    setMoving(false);
+    el("dot").classList.remove("live");
+    // 계획을 다 냈으면 요약으로 넘어간다. `/next` 와 같은 코드다.
+    if (err.code === "SESSION_FINISHED") { return endSession(); }
+    if (err.code === "STOPPED") {
+      // 사람이 멈춘 것이다. **오류가 아니므로 오류 자리에 쓰지 않는다** — WS
+      // 갈래와 같은 처리다. 동기 경로에서는 정지가 REST 응답으로 오므로
+      // (§50.3) 여기서도 같이 다뤄야 한다. 문항은 큐에 그대로 남는다.
+      showStopped();
+      return;
+    }
+    setError(err.message);
+    // 거부되어도 문항은 큐에 그대로 남는다. 다시 보기로 다시 시도할 수 있다.
+    showStalled();
+    return;
+  }
+  renderCounter();
+  // WS 의 `done` 이 이미 답 입력을 열었다. 동기 응답이 그보다 늦게 올 수도
+  // 있으므로 여기서도 한 번 더 맞춰 둔다 — 두 번 열어도 해가 없다.
+  setMoving(false);
+  setAnswering(true);
 }
 
 function renderCounter() {
@@ -406,6 +587,7 @@ function renderCounter() {
 async function present() {
   setAnswering(false);
   setMoving(true);
+  setError("");
   el("status").textContent = "표현 준비 중";
   try {
     await call("POST", `/api/sessions/${state.sessionId}/present`);
@@ -434,6 +616,9 @@ async function submit() {
     // 오답 1회째. 정답은 알려주지 않고 같은 문항을 느리게 다시 낸다.
     el("status").textContent = "다시 한 번 봅니다";
     el("answer").value = "";
+    // 계획 세션은 재생도 계획 경로로 낸다. `/planned` 는 재생 대기를 보고
+    // **같은 문항**을 다시 내며 큐에서 빼지 않는다 (기획서 5.2).
+    if (state.planned) { return presentPlanned(); }
     state.prompt = await call("GET", `/api/sessions/${state.sessionId}/next`);
     renderCounter();
     await present();
@@ -579,12 +764,17 @@ el("startBtn").addEventListener("click", startSession);
 el("name").addEventListener("keydown", (e) => { if (e.key === "Enter") startSession(); });
 el("submitBtn").addEventListener("click", submit);
 el("answer").addEventListener("keydown", (e) => { if (e.key === "Enter") submit(); });
-el("replayBtn").addEventListener("click", present);
+el("replayBtn").addEventListener("click", replayItem);
 el("demoBtn").addEventListener("click", replayDemo);
 el("nextBtn").addEventListener("click", () => {
   if (el("nextBtn").textContent === "요약 보기") { endSession(); } else { nextItem(); }
 });
 el("againBtn").addEventListener("click", () => location.reload());
+el("joinBtn").addEventListener("click", joinSession);
+
+// 기동할 때 한 번 묻고, 시작 화면에 머무는 동안만 되묻는다.
+checkOpenSession();
+openPoll = setInterval(checkOpenSession, OPEN_POLL_MS);
 
 // 락 heartbeat. 세션이 살아 있음을 서버에 알린다 (PRD 10장: 15초 주기).
 setInterval(() => {

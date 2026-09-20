@@ -54,6 +54,7 @@ from server.agent import (
     validate_plan,
 )
 from server.db import TRACK_DISCRIMINATION, TRACK_WORD, Database
+from server.device import DeviceCancelledError
 from server.device.mock import MockDevice
 from server.routes import build_station, create_app
 from tests.conftest import REAL_POSES, REAL_WORDS
@@ -1207,3 +1208,127 @@ def test_live_plan_generation(config, words, db, capsys):
     assert plan.source == SOURCE_LLM, "실제 호출이 폴백으로 내려갔다"
     assert plan.items
     assert attempts[0].usage.input_tokens > 0
+
+# --------------------------------------------------------------------------- #
+# 승인된 계획을 학습자가 실제로 쓸 수 있는가 (DECISIONS §50)
+# 이 테스트는 완화하지 않는다 — 통과하지 않으면 HITL 이 장식이다
+# --------------------------------------------------------------------------- #
+
+def test_an_approved_session_is_discoverable_without_making_a_new_one(http, station):
+    """승인이 만든 세션을 `GET /sessions/open` 이 그대로 알려준다.
+
+    예전에는 학습자 화면이 `POST /sessions` 로 **새** 세션을 내려 했고,
+    승인된 세션이 락을 쥐고 있어 `LOCK_UNAVAILABLE` 로 막혔다. 막힌 것을
+    풀려고 `/device/reset` 을 부르면 방금 승인한 세션이 죽었다.
+    """
+    _, session_id = approved(http, station)
+
+    body = http.get("/api/sessions/open").json()
+    assert body["session_id"] == session_id
+    assert body["learner_name"] == "haru"
+    assert body["total_items"] == 3
+    # 계획에서 온 세션이므로 구동은 `/planned` 로 해야 한다.
+    assert body["planned"] is True
+    assert body["remaining_items"] == 3
+
+    # 참여는 세션을 새로 만들지 않는다. 락도 그대로다.
+    assert station.lock.holder() == session_id
+    assert list(station.controllers) == [session_id]
+
+
+def test_the_learner_completes_the_approved_plan_after_joining(http, station):
+    """승인 → 참여 → 계획된 문항 전부 완주 → 요약.
+
+    승인된 글자열이 그대로 나가야 한다. 규칙이 새로 뽑은 문항이 섞이면
+    HITL 승인의 의미가 없다.
+    """
+    _, session_id = approved(http, station)
+    joined = http.get("/api/sessions/open").json()
+    assert joined["session_id"] == session_id
+
+    seen = []
+    for _ in range(joined["total_items"]):
+        response = http.post(f"/api/sessions/{session_id}/planned")
+        assert response.status_code == 200, response.text
+        seen.append(station.controllers[session_id]._active_answer())
+        assert answer(http, station, session_id).json()["result"] == "correct"
+
+    # 승인된 계획 그대로다.
+    assert seen == ["VWB", "WVF", "WISE"]
+
+    summary = http.post(f"/api/sessions/{session_id}/end").json()
+    assert sum(s["answered"] for s in summary["by_track"].values()) == 3
+    # 다 끝났으므로 참여할 세션이 없다. 다음 학습자는 이름 입력으로 간다.
+    assert http.get("/api/sessions/open").json()["session_id"] is None
+    assert station.lock.holder() is None
+
+
+def test_a_rejoin_mid_item_does_not_lose_the_item(http, station):
+    """화면을 새로 고쳐도 걸려 있던 문항이 그대로 온다."""
+    _, session_id = approved(http, station)
+    presented = http.post(f"/api/sessions/{session_id}/planned").json()
+
+    body = http.get("/api/sessions/open").json()
+    assert body["state"] == "awaiting_answer"
+    assert body["prompt"]["index"] == presented["index"]
+    assert body["prompt"]["length"] == presented["length"]
+    # 큐는 줄지 않는다 — 참여는 구동이 아니다.
+    assert body["remaining_items"] == presented["remaining_items"]
+
+
+def test_a_session_made_by_hand_is_joinable_but_not_planned(http, station):
+    """계획 없이 시작한 세션도 참여 대상이다. 다만 `/planned` 로는 못 돈다."""
+    started = http.post(
+        "/api/sessions", json={"learner_name": "haru", **SMALL}
+    ).json()
+
+    body = http.get("/api/sessions/open").json()
+    assert body["session_id"] == started["session_id"]
+    assert body["planned"] is False
+    assert "remaining_items" not in body
+
+
+def test_there_is_nothing_to_join_before_an_approval(http, station):
+    """계획을 만들기만 해서는 참여할 세션이 없다 (PRD 13.3)."""
+    make_plan(http)
+    assert http.get("/api/sessions/open").json() == {"session_id": None}
+    assert station.lock.holder() is None
+# --------------------------------------------------------------------------- #
+# 동기 구동 경로의 정지 (DECISIONS §50.3) — 이 테스트는 완화하지 않는다
+# --------------------------------------------------------------------------- #
+
+def test_a_stop_during_a_planned_item_is_a_structured_rejection(config, clock):
+    """`/planned` 는 동기다. 정지가 500 으로 새어 나가지 않아야 한다.
+
+    예전에는 `DeviceCancelledError` 가 라우트 밖으로 나가 **500 + 비 JSON
+    응답**이 됐고, 화면의 `JSON.parse` 가 거기서 터져 학습자에게 파서 오류가
+    보였다. 몸통은 WS 갈래와 같아야 한다.
+    """
+    class CancellingDevice(MockDevice):
+        def move_to(self, pose, transition_ms, hold_ms):
+            raise DeviceCancelledError("the motion was cancelled while holding")
+
+    station = build_station(
+        config_path=REAL_POSES,
+        words_path=REAL_WORDS,
+        database=Database.in_memory(),
+        device=CancellingDevice(config, sleep=clock.sleep),
+        clock=clock,
+        rng=random.Random(20260924),
+        background=lambda work: work(),
+        llm=ReplayLlm(GOOD_RESPONSE),
+    )
+    with TestClient(create_app(station)) as http:
+        _, session_id = approved(http, station)
+        response = http.post(f"/api/sessions/{session_id}/planned")
+
+        assert response.status_code == 409, response.text
+        body = response.json()          # 터지지 않고 읽힌다
+        assert body["code"] == "STOPPED"
+        assert body["session_alive"] is True
+
+        # 정지는 세션도 락도 건드리지 않는다 (§42).
+        assert session_id in station.controllers
+        assert station.lock.holder() == session_id
+        # 거부된 문항은 큐에 그대로 남아 다시 낼 수 있다.
+        assert len(station.plans.for_session(session_id).queue) == 3

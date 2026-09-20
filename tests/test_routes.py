@@ -910,3 +910,140 @@ def test_mockhand_has_a_preview_mode(client):
     body = client.get("/mockhand.html").text
     assert 'URLSearchParams(location.search).has("preview")' in body
     assert "ArrowRight" in body and "ArrowLeft" in body
+# --------------------------------------------------------------------------- #
+# 실패 이벤트는 세션이 살아 있는지를 말한다 (DECISIONS §50)
+# 이 테스트는 완화하지 않는다 — 화면이 이어갈 길을 여기서 판단한다
+# --------------------------------------------------------------------------- #
+
+class CancelsOnceDevice(MockDevice):
+    """첫 이동만 정지로 끊고, 그다음부터는 정상으로 움직인다.
+
+    정지 직후 [다시 보기] 를 누르는 실기 경로를 그대로 만든다. 끊긴 이동은
+    가짜 시계를 거의 밀지 않으므로, 곧바로 누른 다시 보기가 구동 요청 최소
+    간격 안에 들어온다 — 실기에서 벌어진 그 순서다.
+    """
+
+    def __init__(self, config, **kwargs):
+        super().__init__(config, **kwargs)
+        self.cancelled = 0
+
+    def move_to(self, pose, transition_ms, hold_ms):
+        if self.cancelled == 0:
+            self.cancelled += 1
+            raise DeviceCancelledError("cancelled by a stop before RDY")
+        return super().move_to(pose, transition_ms, hold_ms)
+
+
+def test_a_replay_right_after_a_stop_is_rejected_but_recoverable(config, clock):
+    """정지 직후의 [다시 보기] 는 최소 간격에 막힌다. **세션은 살아 있다.**
+
+    실기에서 여기서 멈췄다. `POST /present` 는 202 를 돌려주는데 백그라운드가
+    `RATE_LIMIT` 으로 거부되고, 화면은 그 거부에 이어갈 길을 내놓지 않아
+    학습자에게 누를 것이 하나도 남지 않았다 — heartbeat 만 도는 상태다.
+    화면이 [다시 보기] 를 남길 근거가 `session_alive` 다 (DECISIONS §50).
+    """
+    station = build_station(
+        config_path=REAL_POSES,
+        words_path=REAL_WORDS,
+        database=Database.in_memory(),
+        device=CancelsOnceDevice(config, sleep=clock.sleep),
+        clock=clock,
+        background=lambda work: work(),
+    )
+    events = []
+    with TestClient(create_app(station)) as client:
+        session = start(client)
+        sid = session["session_id"]
+        client.get(f"/api/sessions/{sid}/next")
+        controller = station.controllers[sid]
+        station.hub.publish = lambda session_id, event: events.append(event)
+
+        # 이동 중에 정지가 걸렸다.
+        client.post(f"/api/sessions/{sid}/present")
+        # 곧바로 누른 다시 보기. 최소 간격 안이므로 거부된다.
+        assert client.post(f"/api/sessions/{sid}/present").status_code == 202
+
+        failures = [e for e in events if e["type"] == "error"]
+        assert [e["code"] for e in failures] == ["STOPPED", "RATE_LIMIT"]
+        # 두 갈래 모두 세션이 살아 있다고 말한다.
+        assert [e["session_alive"] for e in failures] == [True, True]
+        assert sid in station.controllers
+        assert station.lock.holder() == sid
+        # 문항은 아직 나가지 못했다.
+        assert controller.state == "awaiting_present"
+
+        # 간격을 지나 다시 누르면 같은 문항이 나간다. 여기가 막히면 세션이
+        # 영영 멈춘 것이다.
+        clock.advance(3.0)
+        assert client.post(f"/api/sessions/{sid}/present").status_code == 202
+        assert controller.state == "awaiting_answer"
+
+
+def test_a_stop_says_the_session_is_still_alive(config, clock):
+    station = breaking_station(
+        config, clock, DeviceCancelledError("cancelled by a stop before RDY")
+    )
+    events = []
+    with TestClient(create_app(station)) as client:
+        session = start(client)
+        sid = session["session_id"]
+        client.get(f"/api/sessions/{sid}/next")
+        station.hub.publish = lambda session_id, event: events.append(event)
+        client.post(f"/api/sessions/{sid}/present")
+
+    failures = [e for e in events if e["type"] == "error"]
+    assert [e["code"] for e in failures] == ["STOPPED"]
+    assert failures[0]["session_alive"] is True
+
+
+def test_a_device_failure_says_the_session_is_gone(config, clock):
+    """예상 못 한 실패는 세션을 닫는다. 화면은 이어갈 길을 내놓지 않아야 한다."""
+    station = breaking_station(config, clock, DeviceProtocolError("boom"))
+    events = []
+    with TestClient(create_app(station)) as client:
+        session = start(client)
+        sid = session["session_id"]
+        client.get(f"/api/sessions/{sid}/next")
+        station.hub.publish = lambda session_id, event: events.append(event)
+        client.post(f"/api/sessions/{sid}/present")
+
+    failures = [e for e in events if e["type"] == "error"]
+    assert [e["code"] for e in failures] == ["DEVICE_FAILED"]
+    assert failures[0]["session_alive"] is False
+
+
+# --------------------------------------------------------------------------- #
+# 참여할 세션 조회 (DECISIONS §50)
+# --------------------------------------------------------------------------- #
+
+def test_nothing_is_open_before_a_session_starts(client):
+    assert client.get("/api/sessions/open").json() == {"session_id": None}
+
+
+def test_an_open_session_is_reported_without_touching_the_lock(client, station):
+    session = start(client)
+    sid = session["session_id"]
+
+    body = client.get("/api/sessions/open").json()
+    assert body["session_id"] == sid
+    assert body["learner_name"] == "haru"
+    assert body["total_items"] == session["total_items"]
+    assert body["state"] == "awaiting_item"
+    # 조회는 구동이 아니다. 락도 구동 예산도 건드리지 않는다.
+    assert station.lock.holder() == sid
+    assert station.gate.requests_for(sid) == 0
+
+
+def test_a_finished_session_is_not_open(client, station):
+    session = start(client)
+    sid = session["session_id"]
+    client.post(f"/api/sessions/{sid}/end")
+    assert client.get("/api/sessions/open").json() == {"session_id": None}
+
+
+def test_a_session_this_server_does_not_know_is_not_open(client, station):
+    """락만 남고 컨트롤러가 사라진 경우. 참여할 수 있다고 말하지 않는다."""
+    session = start(client)
+    sid = session["session_id"]
+    station.controllers.pop(sid)
+    assert client.get("/api/sessions/open").json() == {"session_id": None}

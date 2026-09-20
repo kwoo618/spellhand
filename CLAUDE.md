@@ -79,7 +79,7 @@ R5. 추측으로 빈칸을 채우지 않는다. TBD는 TBD로 남긴다. 규칙�
 - 목표: 신규 개발. 기준 문서는 기획서 v3 + PRD v2.1.
   **1차 완료 기준(Mock에서 판별 8 + 단어 4 세션 완주 + 트랙별 요약)은 달성했다.**
 
-- 완료 (527테스트):
+- 완료 (542테스트):
   - `config` — poses.json schema v2(핀 포함) + words.json 필터
   - `calibration` — flex ↔ 각도, 이중 clamp, CAL_HASH
   - `device` — Pose/DeviceAdapter(동기), MockDevice, SerialDevice, 팩토리

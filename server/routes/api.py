@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional, Sequence
 from fastapi import APIRouter, Body, Query, Request
 from sqlalchemy import select
 
-from server.agent import PlanStateError
+from server.agent import PlanNotFoundError, PlanStateError
 from server.calibration import calibration_hash
 from server.db import (
     BOUNDARIES,
@@ -41,6 +41,7 @@ from server.session import (
     SessionController,
     SessionFinishedError,
     SessionPlan,
+    SessionState,
     SessionStateError,
 )
 from server.stats import (
@@ -205,6 +206,78 @@ def start_session(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
         "total_items": controller.total_items,
         "state": controller.state,
     }
+
+
+@router.get("/sessions/open")
+def open_session(request: Request) -> Dict[str, Any]:
+    """지금 참여할 수 있는 세션. 없으면 `session_id` 가 `null` 이다.
+
+    **승인(`/agent/plans/{id}/approve`)이 만든 세션을 학습자가 찾는 창구다.**
+    승인은 세션을 만들고 락까지 잡는다 (PRD 13.3). 그 뒤 학습자 화면이
+    `POST /sessions` 로 **새** 세션을 내려 하면 `LOCK_UNAVAILABLE` 로 막히고,
+    막힌 것을 풀려고 `/device/reset` 을 부르면 방금 승인한 세션이 죽는다.
+    승인된 계획이 그렇게 버려졌다 (DECISIONS.md §50).
+
+    락을 쥔 세션을 그대로 돌려준다 — 이 서버가 컨트롤러를 들고 있고 아직
+    끝나지 않은 것만이다. 새로 만드는 것이 아니므로 락도 건드리지 않는다.
+
+    문항이 이미 걸려 있으면 `prompt` 도 함께 낸다. 화면을 새로 고쳐 다시
+    들어오는 경로가 그것이다 — 한 번 더 물어보게 하지 않는다.
+
+    **`planned` 가 구동 경로를 가른다.** 승인된 계획에서 온 세션은 문항이
+    계획에서 나와야 하므로 `/planned` 로 집행한다. `/next` 로 내면 규칙이
+    문항을 새로 뽑아 승인된 글자열이 버려진다 — 그것은 HITL 을 무효로 만드는
+    것이고, 고치려던 결함의 다른 얼굴이다 (DECISIONS.md §50).
+    """
+    station = _station(request)
+    holder = station.lock.holder()
+    controller = (
+        station.controllers.get(holder) if holder is not None else None
+    )
+    if controller is None or controller.finished:
+        # 락이 비었거나, 쥔 세션이 이 서버의 것이 아니거나, 이미 끝났다.
+        # 셋 다 "참여할 세션이 없다" 다 — 화면은 이름 입력으로 간다.
+        return {"session_id": None}
+
+    payload: Dict[str, Any] = {
+        "session_id": controller.session_id,
+        "learner_id": controller.learner_id,
+        "learner_name": _learner_name(station, controller.learner_id),
+        "total_items": controller.total_items,
+        "index": controller.index,
+        "state": controller.state,
+        # 계획에서 온 세션인가. 화면은 이 칸으로 구동 경로를 고른다.
+        "planned": False,
+    }
+    try:
+        stored = station.plans.for_session(controller.session_id)
+    except PlanNotFoundError:
+        pass
+    else:
+        payload["planned"] = True
+        payload["plan_id"] = stored.plan_id
+        payload["remaining_items"] = len(stored.queue)
+    if controller.state in (SessionState.AWAITING_PRESENT, SessionState.AWAITING_ANSWER):
+        # 문항을 읽다 실패해도 **이 창구는 죽지 않는다.** 여기서 예외가 나면
+        # 참여 조회 자체가 500 이 되고, 그러면 아무도 세션에 들어갈 수 없다 —
+        # 락을 쥔 세션이 남아 있는데 화면은 이름 입력만 내놓는 최악의 조합이다.
+        # 실제로 그렇게 됐다 (DECISIONS.md §50.4). 문항만 빼고 나머지는 낸다.
+        try:
+            payload["prompt"] = _prompt_payload(
+                controller.current_prompt(), controller
+            )
+        except Exception:  # noqa: BLE001 - 조회가 구동 상태 때문에 죽지 않게
+            logger.exception(
+                "could not read the current prompt of session %s",
+                controller.session_id,
+            )
+    return payload
+
+
+def _learner_name(station, learner_id: int) -> Optional[str]:
+    with station.database.session() as db:
+        learner = db.get(Learner, learner_id)
+        return learner.name if learner is not None else None
 
 
 @router.get("/sessions/{session_id}/next")

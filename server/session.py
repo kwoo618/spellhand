@@ -15,6 +15,8 @@ from __future__ import annotations
 import json
 import logging
 import random
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Callable, Dict, List, Mapping, Optional, Protocol, Tuple
@@ -47,7 +49,13 @@ from server.items import (
     generate_word_items,
     heavy_letter_caps,
 )
-from server.safety import PURPOSE_DEMO, PURPOSE_ITEM, SafetyGate, SessionLock
+from server.safety import (
+    PURPOSE_DEMO,
+    PURPOSE_ITEM,
+    DeviceNotIdleError,
+    SafetyGate,
+    SessionLock,
+)
 from server.stats import (
     PairCount,
     TrackSummary,
@@ -382,6 +390,8 @@ class SessionController:
         self._heavy_caps: Mapping[str, int] = {}
         self._heavy_used: Dict[str, int] = {}
         self._ended = False
+        # 구동은 한 번에 하나만 들어온다. `_drive_slot()` 이 이것을 쓴다.
+        self._drive_lock = threading.Lock()
 
     # ------------------------------------------------------------------ #
     # 상태
@@ -450,6 +460,33 @@ class SessionController:
             raise SessionStateError(
                 f"session is {self._state!r}, expected one of {list(states)}"
             )
+
+    @contextmanager
+    def _drive_slot(self):
+        """구동 하나만 들어온다. 겹치면 **거부한다** — 기다리게 하지 않는다.
+
+        기다리게 하면 학습자가 누른 지 몇 초 뒤에 손이 움직인다. 그것은
+        오작동으로 보이므로 거부가 맞다 (§42 의 "재시도는 넣지 않았다"와
+        같은 이유다). 게이트 ⑦ 과 같은 코드(`DEVICE_BUSY`)로 돌려준다.
+
+        **디바이스의 busy 검사만으로는 막히지 않는다.** 거부되는 구동은
+        `except` 에서 상태를 되돌리는데, 되돌림이 끝나기 전에 다음 호출이
+        들어오면 **되돌림이 다음 호출의 상태를 덮어쓴다.** 정지는 손을 즉시
+        놓아 주므로 `busy` 가 먼저 풀리고, 정지 직후의 [다시 보기] 가 정확히
+        그 창에 들어간다. 그러면 `_active_spec` 이 `None` 인 채
+        `AWAITING_ANSWER` 가 되어 `_prompt()` 가 터진다 (DECISIONS.md §50.4).
+
+        따라서 슬롯은 되돌림까지 감싼다. 상태를 만지는 구간 전체가 하나다.
+        """
+        if not self._drive_lock.acquire(blocking=False):
+            raise DeviceNotIdleError(
+                f"session {self.session_id} is already presenting an item; "
+                f"wait for it to finish before driving again"
+            )
+        try:
+            yield
+        finally:
+            self._drive_lock.release()
 
     # ------------------------------------------------------------------ #
     # 단계
@@ -602,27 +639,30 @@ class SessionController:
         `AWAITING_ANSWER` 에서 다시 불러도 된다 — 화면의 "다시 보기"가 그것이다.
         재생도 안전 게이트를 통과하고 구동 요청으로 계산된다.
         """
-        self._require(SessionState.AWAITING_PRESENT, SessionState.AWAITING_ANSWER)
-        spec = self._active_spec
-        assert spec is not None
+        with self._drive_slot():
+            self._require(
+                SessionState.AWAITING_PRESENT, SessionState.AWAITING_ANSWER
+            )
+            spec = self._active_spec
+            assert spec is not None
 
-        self._emit(
-            "presenting",
-            index=self._seq,
-            total=self.total_items,
-            track=spec.track,
-            length=len(spec.letters),
-            attempt=self._attempt,
-        )
-        presented_at, ready_at = self._present(
-            self.session_id,
-            spec,
-            depth_unlocked=self._depth_unlocked(self.learner_id),
-        )
-        self._presented_at = presented_at
-        self._ready_at = ready_at
-        self._state = SessionState.AWAITING_ANSWER
-        self._emit("done", index=self._seq)
+            self._emit(
+                "presenting",
+                index=self._seq,
+                total=self.total_items,
+                track=spec.track,
+                length=len(spec.letters),
+                attempt=self._attempt,
+            )
+            presented_at, ready_at = self._present(
+                self.session_id,
+                spec,
+                depth_unlocked=self._depth_unlocked(self.learner_id),
+            )
+            self._presented_at = presented_at
+            self._ready_at = ready_at
+            self._state = SessionState.AWAITING_ANSWER
+            self._emit("done", index=self._seq)
 
     def present_letters(
         self,
@@ -658,138 +698,139 @@ class SessionController:
 
         거부되면 아무것도 구동되지 않고 세션 상태도 그대로다.
         """
-        if scored:
-            self._require(SessionState.AWAITING_ITEM)
-        else:
-            self._require(
-                SessionState.AWAITING_ITEM,
-                SessionState.AWAITING_PRESENT,
-                SessionState.AWAITING_ANSWER,
-            )
+        with self._drive_slot():
+            if scored:
+                self._require(SessionState.AWAITING_ITEM)
+            else:
+                self._require(
+                    SessionState.AWAITING_ITEM,
+                    SessionState.AWAITING_PRESENT,
+                    SessionState.AWAITING_ANSWER,
+                )
 
-        text = letters.upper()
-        if not text:
-            raise SessionStateError("letters is empty")
-        # 트랙은 게이트가 본다 — 여기서 먼저 걸러내면 같은 잘못이 경로에 따라
-        # 다른 코드로 돌아간다. 경계 모드는 게이트가 보지 않으므로 여기서 본다:
-        # 모르는 값을 그냥 두면 `_present()` 가 조용히 direct 로 취급한다.
-        if boundary not in BOUNDARIES:
-            raise SessionStateError(
-                f"boundary is {boundary!r}, expected one of {list(BOUNDARIES)}"
-            )
-
-        depth = self._depth_unlocked(self.learner_id)
-
-        if not scored:
-            if len(text) != 1:
+            text = letters.upper()
+            if not text:
+                raise SessionStateError("letters is empty")
+            # 트랙은 게이트가 본다 — 여기서 먼저 걸러내면 같은 잘못이 경로에 따라
+            # 다른 코드로 돌아간다. 경계 모드는 게이트가 보지 않으므로 여기서 본다:
+            # 모르는 값을 그냥 두면 `_present()` 가 조용히 direct 로 취급한다.
+            if boundary not in BOUNDARIES:
                 raise SessionStateError(
-                    f"an unscored demo takes exactly one letter, got {len(text)}"
+                    f"boundary is {boundary!r}, expected one of {list(BOUNDARIES)}"
                 )
-            spec = ItemSpec(
-                track=track,
-                letters=text,
-                hold_ms=hold_ms,
-                transition_ms=self._config.timing.transition_ms,
-                boundary=boundary,
-            )
-            self._present(self.session_id, spec, depth_unlocked=depth)
-            self._emit("demo", letters=[text], hint=None)
-            return ItemPrompt(
-                seq=self._seq,
-                track=spec.track,
-                length=len(spec.letters),
-                boundary=spec.boundary,
-                hold_ms=spec.hold_ms,
-                transition_ms=spec.transition_ms,
-                attempt=self._attempt,
-            )
 
-        # 거부되어도 세션이 그대로여야 하므로, 손이 실제로 움직인 뒤에만 이
-        # 변경을 확정한다.
-        snapshot = (
-            self._seq,
-            self._attempt,
-            self._active_spec,
-            self._active_key,
-            self._retry_pending,
-            self._last_demo,
-            list(self._schedule),
-            list(self._heavy_used.items()),
-        )
+            depth = self._depth_unlocked(self.learner_id)
 
-        if self._retry_pending:
-            # 재생이 걸린 문항을 두고 새 문항으로 넘어가면 학습자는 재생을 받지
-            # 못한다 (기획서 5.2). 재생의 유지 시간·경계는 적응 규칙이 이미
-            # 정해 두었으므로(`on_wrong_first`) 호출자가 준 값은 쓰지 않는다 —
-            # 돌려주는 `ItemPrompt` 가 실제로 쓰인 값을 담는다.
-            if self._active_key is None or text != self._active_key.letters:
-                raise SessionStateError(
-                    f"item {self._seq} is awaiting its replay; present the same "
-                    f"letters again before moving on"
+            if not scored:
+                if len(text) != 1:
+                    raise SessionStateError(
+                        f"an unscored demo takes exactly one letter, got {len(text)}"
+                    )
+                spec = ItemSpec(
+                    track=track,
+                    letters=text,
+                    hold_ms=hold_ms,
+                    transition_ms=self._config.timing.transition_ms,
+                    boundary=boundary,
                 )
-            self._retry_pending = False
-            self._attempt = 2
-        else:
-            if not self._schedule:
-                self._state = SessionState.FINISHED
-                raise SessionFinishedError(
-                    f"all {self.total_items} items have been presented"
+                self._present(self.session_id, spec, depth_unlocked=depth)
+                self._emit("demo", letters=[text], hint=None)
+                return ItemPrompt(
+                    seq=self._seq,
+                    track=spec.track,
+                    length=len(spec.letters),
+                    boundary=spec.boundary,
+                    hold_ms=spec.hold_ms,
+                    transition_ms=spec.transition_ms,
+                    attempt=self._attempt,
                 )
-            if track not in self._schedule:
-                raise SessionStateError(
-                    f"the plan has no {track!r} item left; remaining "
-                    + str({t: self._schedule.count(t) for t in TRACKS})
-                )
-            self._schedule.remove(track)
-            self._seq += 1
-            self._attempt = 1
-            self._active_spec = ItemSpec(
-                track=track,
-                letters=text,
-                hold_ms=hold_ms,
-                transition_ms=self._difficulty[track].transition_ms,
-                boundary=boundary,
-            )
-            self._active_key = _AnswerKey(seq=self._seq, letters=text)
-            self._last_demo = None
-            for letter in self._heavy_used:
-                if letter in text:
-                    self._heavy_used[letter] += 1
 
-        spec = self._active_spec
-        assert spec is not None
-        self._emit(
-            "presenting",
-            index=self._seq,
-            total=self.total_items,
-            track=spec.track,
-            length=len(spec.letters),
-            attempt=self._attempt,
-        )
-        try:
-            presented_at, ready_at = self._present(
-                self.session_id, spec, depth_unlocked=depth
-            )
-        except Exception:
-            (
+            # 거부되어도 세션이 그대로여야 하므로, 손이 실제로 움직인 뒤에만 이
+            # 변경을 확정한다.
+            snapshot = (
                 self._seq,
                 self._attempt,
                 self._active_spec,
                 self._active_key,
                 self._retry_pending,
                 self._last_demo,
-                schedule,
-                heavy,
-            ) = snapshot
-            self._schedule = list(schedule)
-            self._heavy_used = dict(heavy)
-            raise
+                list(self._schedule),
+                list(self._heavy_used.items()),
+            )
 
-        self._presented_at = presented_at
-        self._ready_at = ready_at
-        self._state = SessionState.AWAITING_ANSWER
-        self._emit("done", index=self._seq)
-        return self._prompt()
+            if self._retry_pending:
+                # 재생이 걸린 문항을 두고 새 문항으로 넘어가면 학습자는 재생을 받지
+                # 못한다 (기획서 5.2). 재생의 유지 시간·경계는 적응 규칙이 이미
+                # 정해 두었으므로(`on_wrong_first`) 호출자가 준 값은 쓰지 않는다 —
+                # 돌려주는 `ItemPrompt` 가 실제로 쓰인 값을 담는다.
+                if self._active_key is None or text != self._active_key.letters:
+                    raise SessionStateError(
+                        f"item {self._seq} is awaiting its replay; present the same "
+                        f"letters again before moving on"
+                    )
+                self._retry_pending = False
+                self._attempt = 2
+            else:
+                if not self._schedule:
+                    self._state = SessionState.FINISHED
+                    raise SessionFinishedError(
+                        f"all {self.total_items} items have been presented"
+                    )
+                if track not in self._schedule:
+                    raise SessionStateError(
+                        f"the plan has no {track!r} item left; remaining "
+                        + str({t: self._schedule.count(t) for t in TRACKS})
+                    )
+                self._schedule.remove(track)
+                self._seq += 1
+                self._attempt = 1
+                self._active_spec = ItemSpec(
+                    track=track,
+                    letters=text,
+                    hold_ms=hold_ms,
+                    transition_ms=self._difficulty[track].transition_ms,
+                    boundary=boundary,
+                )
+                self._active_key = _AnswerKey(seq=self._seq, letters=text)
+                self._last_demo = None
+                for letter in self._heavy_used:
+                    if letter in text:
+                        self._heavy_used[letter] += 1
+
+            spec = self._active_spec
+            assert spec is not None
+            self._emit(
+                "presenting",
+                index=self._seq,
+                total=self.total_items,
+                track=spec.track,
+                length=len(spec.letters),
+                attempt=self._attempt,
+            )
+            try:
+                presented_at, ready_at = self._present(
+                    self.session_id, spec, depth_unlocked=depth
+                )
+            except Exception:
+                (
+                    self._seq,
+                    self._attempt,
+                    self._active_spec,
+                    self._active_key,
+                    self._retry_pending,
+                    self._last_demo,
+                    schedule,
+                    heavy,
+                ) = snapshot
+                self._schedule = list(schedule)
+                self._heavy_used = dict(heavy)
+                raise
+
+            self._presented_at = presented_at
+            self._ready_at = ready_at
+            self._state = SessionState.AWAITING_ANSWER
+            self._emit("done", index=self._seq)
+            return self._prompt()
 
     def submit(self, answer: str) -> AnswerOutcome:
         """응답을 채점하고 기록한 뒤 난이도를 옮긴다."""
