@@ -110,6 +110,10 @@ DEFAULT_MODEL = "claude-opus-5"
 # max_tokens 에 들어가므로 넉넉히 준다. 스트리밍 없이 안전한 범위다.
 MAX_TOKENS = 16000
 
+# 서버측 거절 폴백. `fallbacks="default"` 의 스칼라 형식과 짝이 맞는 베타 헤더다
+# (배열 형식은 `-2026-06-01` 이고, 형식과 헤더를 섞으면 400 이다).
+FALLBACK_BETA = "server-side-fallback-2026-07-01"
+
 # 재생성 상한 (PRD 13.3 "재생성 (최대 2회)"). 첫 호출 + 재생성 2회 = 최대 3회.
 MAX_REGENERATIONS = 2
 
@@ -309,6 +313,7 @@ class PlanContext:
     learner_name: str
     learner_id: Optional[int]
     letters: Tuple[str, ...]
+    confusion_pairs: Tuple[Mapping[str, Any], ...]
     depth_pairs_unlocked: bool
     recent: Mapping[str, Tuple[str, ...]]
     difficulty: Mapping[str, Difficulty]
@@ -404,6 +409,15 @@ def build_context(
         learner_name=learner_name,
         learner_id=learner_id,
         letters=tuple(sorted(config.poses)),
+        confusion_pairs=tuple(
+            {
+                "pair": list(pair.pair),
+                "axis": pair.axis,
+                "depth": pair.depth,
+                "hint": pair.hint,
+            }
+            for pair in config.confusion_pairs
+        ),
         depth_pairs_unlocked=unlocked,
         recent=recent,
         difficulty=difficulty,
@@ -479,7 +493,9 @@ SYSTEM_PROMPT = """\
 - 지원 글자 목록에 없는 글자를 쓰지 않는다.
 - `discrimination` 문항에 같은 글자를 연속으로 두지 않는다.
 - 최근 출제된 문항을 다시 내지 않는다.
-- 깊이쌍이 잠겨 있으면 그 쌍의 두 글자를 한 문항에 함께 넣지 않는다.
+- `locked_pairs` 에 있는 쌍은 두 글자를 한 문항에 함께 넣지 않는다. **그 목록에
+  없는 쌍에는 아무 제한이 없다.** 특히 `weakest_pairs` 는 제한이 아니라 목표다 —
+  `locked_pairs` 에 없는 한 두 글자를 한 문항에 나란히 넣어야 훈련이 된다.
 - 요청된 문항 수를 트랙별로 정확히 맞춘다.
 
 **JSON 객체 하나만 출력한다.** 마크다운 코드 블록(백틱), 서두, 설명, 뒷말을
@@ -500,7 +516,20 @@ def build_prompt(context: PlanContext, request: str) -> Tuple[str, str]:
         "tracks": list(TRACKS),
         "boundaries": list(BOUNDARIES),
         "word_pool": list(context.words),
+        "confusion_pairs": [dict(pair) for pair in context.confusion_pairs],
         "depth_pairs_unlocked": context.depth_pairs_unlocked,
+        # **어느 쌍이 잠겼는지를 명시한다.** `depth_pairs_unlocked` 만 주면 모델이
+        # "약점 쌍이 곧 잠긴 쌍" 이라고 읽고 약점 쌍을 피해 간다. 실제로 그랬다
+        # (DECISIONS.md §47.8).
+        "locked_pairs": (
+            []
+            if context.depth_pairs_unlocked
+            else [
+                list(pair["pair"])
+                for pair in context.confusion_pairs
+                if pair["depth"]
+            ]
+        ),
         "weakest_pairs": [list(pair) for pair in context.weakest_pairs],
         "by_track": {
             track: {
@@ -1003,6 +1032,11 @@ class AnthropicClient:
 
     assistant prefill 로 `{` 를 밀어 넣는 흔한 수법은 쓰지 않는다 — Opus 5
     계열에서 400 이다.
+
+    **서버측 거절 폴백을 켠다.** 안전 분류기가 요청을 거절하면 같은 호출 안에서
+    다른 모델이 이어받는다. 훈련 담당자의 자연어 문장이 오탐을 건드리는 일이
+    실제로 있었고(§47.8), 그때 규칙 폴백으로 내려가면 에이전트가 아무 일도 하지
+    않은 것이 된다.
     """
 
     def __init__(
@@ -1046,7 +1080,7 @@ class AnthropicClient:
     def complete(self, system: str, user: str) -> LlmReply:
         client = self._anthropic()
         try:
-            response = client.messages.create(
+            response = client.beta.messages.create(
                 model=self.model,
                 max_tokens=self.max_tokens,
                 system=system,
@@ -1054,24 +1088,55 @@ class AnthropicClient:
                 output_config={
                     "format": {"type": "json_schema", "schema": PLAN_SCHEMA}
                 },
+                betas=[FALLBACK_BETA],
+                fallbacks="default",
             )
         except Exception as exc:  # noqa: BLE001 - 어떤 실패든 폴백이 받는다
             raise LlmUnavailableError(
                 f"the plan request failed: {type(exc).__name__}: {exc}"
             ) from exc
 
+        served_by = getattr(response, "model", self.model)
+        usage = response.usage
+        tokens = {
+            "input_tokens": getattr(usage, "input_tokens", 0) or 0,
+            "output_tokens": getattr(usage, "output_tokens", 0) or 0,
+            "cache_read_tokens": getattr(usage, "cache_read_input_tokens", 0) or 0,
+        }
+
+        # **`content` 를 읽기 전에 `stop_reason` 을 본다.** 거절은 HTTP 200 으로
+        # 오고 `content` 가 비어 있다. 그것을 "빈 응답" 으로 처리하면 원인이
+        # 로그에서 사라진다 (§47.8).
+        stop_reason = getattr(response, "stop_reason", None)
+        if stop_reason == "refusal":
+            details = getattr(response, "stop_details", None)
+            raise LlmUnavailableError(
+                f"the request was declined by a safety classifier "
+                f"(category={getattr(details, 'category', None)!r}): "
+                f"{getattr(details, 'explanation', '')}"
+            )
+
+        if served_by != self.model:
+            # 서버측 폴백이 이어받았다. 계획은 나왔지만 어느 모델이 낸 것인지
+            # 로그에 남아야 한다.
+            logger.warning(
+                "agent: %s declined; the plan was served by %s",
+                self.model,
+                served_by,
+            )
+
         text = "".join(
             block.text for block in response.content if block.type == "text"
         )
-        usage = response.usage
-        reply = LlmReply(
-            text=text,
-            model=getattr(response, "model", self.model),
-            input_tokens=getattr(usage, "input_tokens", 0) or 0,
-            output_tokens=getattr(usage, "output_tokens", 0) or 0,
-            cache_read_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
-        )
-        return reply
+        if not text.strip():
+            raise LlmUnavailableError(
+                f"the response carried no text "
+                f"(stop_reason={stop_reason!r}, blocks="
+                f"{[block.type for block in response.content]}, "
+                f"output_tokens={tokens['output_tokens']})"
+            )
+
+        return LlmReply(text=text, model=served_by, **tokens)
 
 
 # --------------------------------------------------------------------------- #

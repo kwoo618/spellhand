@@ -250,6 +250,31 @@ def test_the_prompt_carries_the_word_pool_and_the_current_difficulty(
     assert facts["depth_pairs_unlocked"] is False
 
 
+def test_the_prompt_names_which_pairs_are_locked(config, context):
+    """`depth_pairs_unlocked` 만 주면 모델이 약점 쌍을 잠긴 쌍으로 읽는다.
+
+    실제 호출에서 그렇게 됐다 — V/W 를 "잠긴 깊이쌍" 으로 오해해 요청의 핵심인
+    V/W 대비를 피해 갔다 (DECISIONS.md §47.8). 어느 쌍이 잠겼는지 명시한다.
+    """
+    _, user = build_prompt(context, "V와 W 집중")
+    facts = json.loads(user[user.index("{") : user.rindex("}") + 1])
+
+    locked = {frozenset(pair) for pair in facts["locked_pairs"]}
+    assert locked == {frozenset(pair.pair) for pair in config.depth_pairs()}
+    # 약점 쌍은 잠긴 쌍이 아니다. 둘을 구분할 근거가 프롬프트 안에 있어야 한다.
+    for pair in facts["weakest_pairs"]:
+        assert frozenset(pair) not in locked
+    # 깊이 여부는 혼동쌍 목록에도 들어 있다.
+    assert any(pair["depth"] for pair in facts["confusion_pairs"])
+
+
+def test_the_prompt_locks_nothing_once_depth_pairs_are_unlocked(context):
+    unlocked = dataclasses.replace(context, depth_pairs_unlocked=True)
+    _, user = build_prompt(unlocked, "E와 I 집중")
+    facts = json.loads(user[user.index("{") : user.rindex("}") + 1])
+    assert facts["locked_pairs"] == []
+
+
 # --------------------------------------------------------------------------- #
 # 파싱 — 백틱·서두가 붙어 와도 살린다
 # --------------------------------------------------------------------------- #
@@ -904,20 +929,151 @@ def test_build_station_does_not_wire_a_real_model_by_default(config, clock):
     assert station.agent._llm is None
 
 
+class FakeSdk:
+    """`client.beta.messages.create` 만 흉내낸 SDK.
+
+    실제 SDK 를 부르지 않고 `AnthropicClient` 의 응답 처리를 고정한다. 호출
+    인자를 붙잡아 두므로 어떤 파라미터를 보내는지도 검사할 수 있다.
+    """
+
+    def __init__(self, response=None, raises=None):
+        self._response = response
+        self._raises = raises
+        self.kwargs = None
+        outer = self
+
+        class _Messages:
+            @staticmethod
+            def create(**kwargs):
+                outer.kwargs = kwargs
+                if outer._raises is not None:
+                    raise outer._raises
+                return outer._response
+
+        class _Beta:
+            messages = _Messages()
+
+        self.beta = _Beta()
+
+
+class FakeUsage:
+    def __init__(self, input_tokens=100, output_tokens=0, cache_read_input_tokens=0):
+        self.input_tokens = input_tokens
+        self.output_tokens = output_tokens
+        self.cache_read_input_tokens = cache_read_input_tokens
+
+
+class FakeBlock:
+    def __init__(self, type_, text=None):
+        self.type = type_
+        if text is not None:
+            self.text = text
+
+
+class FakeDetails:
+    def __init__(self, category, explanation):
+        self.category = category
+        self.explanation = explanation
+
+
+class FakeResponse:
+    def __init__(
+        self,
+        *,
+        content=(),
+        stop_reason="end_turn",
+        stop_details=None,
+        model="claude-opus-5",
+        usage=None,
+    ):
+        self.content = list(content)
+        self.stop_reason = stop_reason
+        self.stop_details = stop_details
+        self.model = model
+        self.usage = usage or FakeUsage()
+
+
 def test_the_anthropic_client_reports_a_missing_credential_as_a_fallback_signal():
     """자격증명이 없으면 예외가 아니라 폴백 신호다 (PRD 13.4)."""
-    client = AnthropicClient(api_key=None, client=_RefusingSdk())
-    with pytest.raises(LlmUnavailableError):
+    sdk = FakeSdk(raises=TypeError("Could not resolve authentication method."))
+    client = AnthropicClient(client=sdk)
+    with pytest.raises(LlmUnavailableError, match="Could not resolve"):
         client.complete("s", "u")
 
 
-class _RefusingSdk:
-    """자격증명이 없을 때의 SDK 를 흉내낸다. 요청 시점에 터진다."""
+def test_the_client_asks_for_the_server_side_refusal_fallback():
+    """Opus 5 요청에는 서버측 거절 폴백이 켜져 있어야 한다 (§47.8)."""
+    from server.agent import FALLBACK_BETA
 
-    class messages:  # noqa: N801 - SDK 모양을 그대로 흉내낸다
-        @staticmethod
-        def create(**kwargs):
-            raise TypeError("Could not resolve authentication method.")
+    sdk = FakeSdk(
+        FakeResponse(content=[FakeBlock("text", GOOD_RESPONSE)],
+                     usage=FakeUsage(output_tokens=300))
+    )
+    AnthropicClient(client=sdk).complete("s", "u")
+    assert sdk.kwargs["fallbacks"] == "default"
+    assert sdk.kwargs["betas"] == [FALLBACK_BETA]
+    # 구조화 출력도 함께 나간다.
+    assert sdk.kwargs["output_config"]["format"]["type"] == "json_schema"
+    # 각도·flex 를 만들게 하는 파라미터는 없다 (R1).
+    assert "tools" not in sdk.kwargs
+
+
+def test_a_refusal_carries_its_category_into_the_fallback_reason():
+    """**`content` 를 읽기 전에 `stop_reason` 을 본다.**
+
+    거절은 HTTP 200 으로 오고 `content` 가 비어 있다. 이것을 "빈 응답" 으로
+    처리하면 원인이 로그에서 사라진다 — 실제로 그렇게 됐다 (§47.8).
+    """
+    sdk = FakeSdk(
+        FakeResponse(
+            content=[],
+            stop_reason="refusal",
+            stop_details=FakeDetails("cyber", "blocked under the usage policy"),
+        )
+    )
+    with pytest.raises(LlmUnavailableError) as raised:
+        AnthropicClient(client=sdk).complete("s", "u")
+    assert "declined" in str(raised.value)
+    assert "'cyber'" in str(raised.value)
+    assert "usage policy" in str(raised.value)
+
+
+def test_a_response_without_text_reports_the_stop_reason():
+    """사고 블록만 온 응답도 원인을 밝힌다."""
+    sdk = FakeSdk(
+        FakeResponse(content=[FakeBlock("thinking")], stop_reason="max_tokens")
+    )
+    with pytest.raises(LlmUnavailableError) as raised:
+        AnthropicClient(client=sdk).complete("s", "u")
+    assert "max_tokens" in str(raised.value)
+    assert "thinking" in str(raised.value)
+
+
+def test_a_thinking_block_before_the_text_does_not_break_extraction():
+    """Opus 5 는 사고가 기본으로 켜져 있어 `content[0]` 이 text 가 아니다."""
+    sdk = FakeSdk(
+        FakeResponse(
+            content=[FakeBlock("thinking"), FakeBlock("text", GOOD_RESPONSE)],
+            usage=FakeUsage(input_tokens=2400, output_tokens=2200),
+        )
+    )
+    reply = AnthropicClient(client=sdk).complete("s", "u")
+    assert parse_plan_json(reply.text).items
+    assert reply.input_tokens == 2400
+    assert reply.output_tokens == 2200
+
+
+def test_a_plan_served_by_the_fallback_model_reports_that_model():
+    """거절을 다른 모델이 이어받으면 사용량에 그 모델이 남는다."""
+    sdk = FakeSdk(
+        FakeResponse(
+            content=[FakeBlock("text", GOOD_RESPONSE)],
+            model="claude-opus-4-8",
+            usage=FakeUsage(output_tokens=300),
+        )
+    )
+    reply = AnthropicClient(client=sdk).complete("s", "u")
+    assert reply.model == "claude-opus-4-8"
 
 
 @pytest.mark.skipif(
