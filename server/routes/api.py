@@ -30,7 +30,7 @@ from server.items import (
     word_violations,
 )
 from server.routes.events import MCP_LOG_CHANNEL
-from server.safety import UnsupportedLettersError
+from server.safety import LockNotHeldError, UnsupportedLettersError
 from server.session import (
     DIFFICULTY_LADDER,
     AnswerOutcome,
@@ -255,6 +255,7 @@ def present_sequence(
     `transition_ms` 는 받지 않는다 — 난이도 축이 아니고 호출자가 정할 값도 아니다.
     """
     station = _station(request)
+    _require_lock(station, session_id)
     controller = _controller(request, session_id)
 
     letters = str(body.get("letters") or "").strip()
@@ -284,6 +285,7 @@ def demo_letter(
     (오답 2회 뒤에만 허용, DECISIONS.md §26), 이쪽은 호출자가 고른 글자다.
     """
     station = _station(request)
+    _require_lock(station, session_id)
     controller = _controller(request, session_id)
 
     letter = str(body.get("letter") or "").strip()
@@ -302,6 +304,25 @@ def demo_letter(
         "hold_ms": prompt.hold_ms,
         "transition_ms": prompt.transition_ms,
     }
+
+
+def _require_lock(station, session_id: int) -> None:
+    """구동 요청의 원인을 락 쪽으로 먼저 돌린다 (게이트 ①, PRD 15.2).
+
+    이 검사 없이는 세션이 아예 없는 호출이 `SESSION_STATE` 로 돌아온다 —
+    컨트롤러 조회가 먼저이기 때문이다. 그런데 PRD 15.2 의 라이브 차단 사례는
+    "`start_session` 없이 `present_sequence`" 를 **`LOCK_NOT_HELD`** 로
+    규정하고 있고, 그게 원인을 더 정확히 말한다: 세션이 없으면 락도 없다.
+
+    **게이트를 대신하지 않는다.** 아래에서 `SafetyGate` 가 ① 을 다시 본다.
+    앞서 거절하는 검사는 통과 범위를 넓히지 않는다.
+    """
+    holder = station.lock.holder()
+    if holder != session_id:
+        raise LockNotHeldError(
+            f"session {session_id} does not hold the device lock "
+            f"(holder={holder}); no motion is allowed without it"
+        )
 
 
 def _clamp_hold_ms(station, value: Any) -> int:
