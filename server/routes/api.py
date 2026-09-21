@@ -744,11 +744,16 @@ def item_bank(
     )
 
     with station.database.session() as db:
+        # 이름을 **줬는데** 없는 이름이면 "그 학습자, 기록 없음" 이다. 이름을 안
+        # 준 경우(학습자를 모르니 누구에게든 최근에 나간 것을 피한다, §46)와
+        # 같은 길로 떨어뜨리면 남의 최근 출제가 새 학습자의 후보를 움직이고
+        # `excluded_recent` 로 응답에까지 실린다 (DECISIONS.md §54).
+        unknown_name = bool(learner_name) and learner_id is None
         recent = (
             recent_letters(
                 db, track, window=RECENT_ITEM_WINDOW, learner_id=learner_id
             )
-            if exclude_recent
+            if exclude_recent and not unknown_name
             else ()
         )
         unlocked = (

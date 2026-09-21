@@ -58,6 +58,8 @@ from server.items import (
 )
 from server.session import DIFFICULTY_LADDER, SessionPlan
 from server.stats import (
+    TrackSummary,
+    default_pairs,
     depth_unlocked,
     item_contains_depth_pair,
     recent_letters,
@@ -363,7 +365,17 @@ def build_context(
     discrimination_items: int,
     word_items: int,
 ) -> PlanContext:
-    """DB 와 설정에서 계획 맥락을 모은다. **학습자를 만들지 않는다.**"""
+    """DB 와 설정에서 계획 맥락을 모은다. **학습자를 만들지 않는다.**
+
+    **없는 이름이면 기록을 읽지 않는다** (DECISIONS.md §54). stats.py 의 집계는
+    `learner_id=None` 을 "범위 없음" 으로 읽어 모든 학습자를 센다. 그대로
+    넘기면 첫 세션 전 참여자의 계획이 앞 참여자들의 요약·최근 문항·약점 쌍으로
+    만들어진다. 계획은 그럴듯하게 나오므로 로그로는 드러나지 않았다.
+
+    없는 학습자의 맥락은 "기록 없음" 이다 — 최근 문항 없음, 요약 0, 목표 쌍은
+    설정 순서의 기본 쌍(`default_pairs`). 규칙 세션이 같은 학습자에게 고를
+    쌍과 같은 코드다.
+    """
     from sqlalchemy import select
 
     with database.session() as db:
@@ -377,19 +389,30 @@ def build_context(
             if learner_id is not None
             else False
         )
-        recent = {
-            track: recent_letters(
-                db, track, window=RECENT_ITEM_WINDOW, learner_id=learner_id
-            )
-            for track in TRACKS
-        }
         difficulty = {
             track: current_difficulty(config, db, learner_id, track)
             for track in TRACKS
         }
-        weakest = tuple(
-            tuple(pair.pair)
-            for pair in weakest_pairs(
+        if learner_id is None:
+            recent: Dict[str, Tuple[str, ...]] = {track: () for track in TRACKS}
+            pairs = default_pairs(config, top=2, exclude_depth=not unlocked)
+            summaries = {
+                track: _summary_json(
+                    TrackSummary(
+                        track=track, answered=0, correct=0, wrong=0,
+                        length_errors=0, order_errors=0, avg_response_ms=None,
+                    )
+                )
+                for track in TRACKS
+            }
+        else:
+            recent = {
+                track: recent_letters(
+                    db, track, window=RECENT_ITEM_WINDOW, learner_id=learner_id
+                )
+                for track in TRACKS
+            }
+            pairs = weakest_pairs(
                 db,
                 config,
                 TRACK_DISCRIMINATION,
@@ -397,13 +420,13 @@ def build_context(
                 exclude_depth=not unlocked,
                 learner_id=learner_id,
             )
-        )
-        summaries = {
-            track: _summary_json(
-                track_summary(db, track, learner_id=learner_id)
-            )
-            for track in TRACKS
-        }
+            summaries = {
+                track: _summary_json(
+                    track_summary(db, track, learner_id=learner_id)
+                )
+                for track in TRACKS
+            }
+        weakest = tuple(tuple(pair.pair) for pair in pairs)
 
     return PlanContext(
         learner_name=learner_name,
@@ -487,6 +510,9 @@ SYSTEM_PROMPT = """\
 - `hold_ms` 가 짧아질수록 어렵다. `boundary` 는 explicit(글자 사이에 중립 자세로
   경계를 보여 줌)가 쉽고 direct(글자에서 글자로 바로)가 어렵다.
 - 두 트랙의 성적은 절대 합치지 않는다. 트랙마다 따로 판단한다.
+- `learner_history` 가 `none` 이면 이 학습자는 **답한 문항이 하나도 없다.** 그때
+  `weakest_pairs` 는 측정된 약점이 아니라 설정 순서의 기본 쌍이다. 기준선
+  세션으로 짜고, rationale 에 이 학습자의 약점을 안다고 쓰지 않는다.
 
 지켜야 할 것:
 
@@ -503,6 +529,18 @@ SYSTEM_PROMPT = """\
 """
 
 
+def learner_history(context: PlanContext) -> str:
+    """`none` — 어느 트랙에서도 답한 문항이 없다. `recorded` — 하나라도 있다.
+
+    `learner_id` 로 가르지 않는다. 승인만 되고 참여하지 않은 학습자는 행이
+    있어도 기록이 없고, 그때의 약점 쌍도 설정 순서의 기본 쌍이다.
+    """
+    answered = sum(
+        int(context.summaries[track].get("answered") or 0) for track in TRACKS
+    )
+    return "recorded" if answered else "none"
+
+
 def build_prompt(context: PlanContext, request: str) -> Tuple[str, str]:
     """(system, user) 를 만든다.
 
@@ -512,6 +550,9 @@ def build_prompt(context: PlanContext, request: str) -> Tuple[str, str]:
     """
     facts = {
         "learner": context.learner_name,
+        # 기록이 없는 학습자의 `weakest_pairs` 는 기본 쌍이다. 그것을 모델이
+        # 측정값으로 읽고 "V/W 를 헷갈린다" 고 근거를 지어내지 않게 한다 (§54).
+        "learner_history": learner_history(context),
         "supported_letters": list(context.letters),
         "tracks": list(TRACKS),
         "boundaries": list(BOUNDARIES),
@@ -982,10 +1023,16 @@ def rule_plan(
             for spec in specs
         )
 
+    # 기록이 없으면 "약점 쌍" 이라고 쓰지 않는다. 교사가 읽는 문장이
+    # 측정하지 않은 것을 측정한 것처럼 말하면 안 된다 (§54).
+    basis = (
+        "이 학습자는 기록이 없어 설정 순서의 기본 쌍과 첫 단 난이도에서"
+        if learner_history(context) == "none"
+        else "약점 쌍과 트랙별 현재 난이도에서"
+    )
     return AgentPlan(
         rationale=(
-            "규칙 기반 폴백. LLM 계획을 쓸 수 없어 약점 쌍과 트랙별 현재 "
-            "난이도에서 문항을 생성했다."
+            f"규칙 기반 폴백. LLM 계획을 쓸 수 없어 {basis} 문항을 생성했다."
         ),
         target_pairs=context.weakest_pairs,
         items=tuple(produced),

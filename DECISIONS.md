@@ -2833,3 +2833,114 @@ PRD 14장·README·시연 대본이 예전 주소를 적고 있다. 발표장에
   `ok: true`) — 고치기 전 코드에서 실패함을 확인
 
 ---
+
+## 54. 신규 학습자의 계획은 "기록 없음 + 설정 순서의 기본 쌍" 으로 만든다
+
+**증상 (§53 후속).** `agent.build_context()` 에 없는 이름을 주면 모든 학습자의
+판별·단어 요약, 최근 문항, 약점 쌍이 맥락에 들어갔다. 그 맥락이 LLM 프롬프트와
+계획 검증으로 간다. 실데이터 수집은 참여자마다 새 이름으로 시작하므로 **10명
+전원의 첫 계획이 앞 참여자들의 성적으로 만들어진다.** 계획이 그럴듯하게 나와
+로그로는 드러나지 않는다.
+
+재현: 다른 학습자(6문항 오답)를 심고 `nobody` 로 맥락을 만들면
+`summaries.discrimination.answered == 6`, `recent` 에 그 학습자의 글자열.
+
+### 결정 — 신규 학습자의 계획은 무엇을 근거로 하는가
+
+두 안이 있었다.
+
+- (가) 기록 없음을 알리고 LLM 이 기준선 세션을 자유롭게 짠다
+- (나) 설정 순서의 기본 혼동쌍을 목표로 준다
+
+**(나) 를 목표로 주고, (가) 의 "기록 없음" 표시를 함께 준다.**
+
+1. **규칙 세션과 같은 답이어야 한다.** 새 학습자가 규칙 세션(`/sessions`)으로
+   시작하면 `weakest_pairs()` 가 기록이 없어 설정 순서로 채운다. 계획 경로만
+   다른 쌍을 목표로 삼으면 첫 세션이 **진입 경로에 따라** 달라진다
+2. **참여자 사이 비교가 된다.** 10명의 첫 세션이 같은 기본 쌍을 목표로 삼아야
+   1세션 → 2세션의 변화를 사람 사이에서 견줄 수 있다. (가) 만 주면 모델이
+   참여자마다 다른 기준선을 짠다 — 측정 설계에 변수가 하나 더 생긴다
+3. **폴백을 없애지 않는다.** 기본 쌍은 첫 세션에도 목표 쌍이 있어야 한다는
+   기존 결정이다 (stats.py `weakest_pairs` 주석)
+
+다만 기본 쌍만 주면 모델이 그것을 **측정된 약점**으로 읽고 "V/W 를 헷갈리므로"
+같은 근거를 지어낸다. 그래서 `learner_history: "none" | "recorded"` 를 프롬프트
+사실에 넣고, 시스템 프롬프트에 "none 이면 `weakest_pairs` 는 기본 쌍이다 —
+기준선으로 짜고 약점을 안다고 쓰지 말라" 를 한 줄 더했다. 규칙 폴백의 근거
+문장도 같은 경우 "기록이 없어 설정 순서의 기본 쌍과 첫 단 난이도에서" 로 쓴다.
+
+`learner_history` 는 `learner_id` 가 아니라 **답한 문항 수**로 가른다. 승인만
+되고 참여하지 않은 학습자는 행이 있어도 기록이 없고, 그때의 약점 쌍도 기본
+쌍이다.
+
+### "기록 없음" 을 stats.py 에 전하는 방법
+
+`weakest_pairs()` 의 폴백(설정 순서로 채우기)을 `default_pairs()` 로 꺼냈다.
+`weakest_pairs()` 는 측정된 순위를 넘겨 그것을 부르고, 없는 학습자의 맥락은
+DB 를 읽지 않고 그것만 부른다. **계산은 바뀌지 않았다** — 같은 코드를 두 곳이
+부를 뿐이다 (§52 의 `depth_unlock_progress` 와 같은 모양).
+
+`learner_id=None` = "전체" 라는 집계 함수의 뜻은 **그대로 둔다.** `/stats/confusion`
+의 학습자 미지정이 그 뜻을 쓴다. 막는 곳은 이름 조회 결과를 넘기는 호출자다.
+
+### `/item-bank` — §53 의 판단을 고친다
+
+§53 에 "후보를 좁히는 쪽이라 통계는 섞이지 않는다" 고 적었다. **틀렸다.** 확인
+해 보니 둘이 더 있었다.
+
+- 좁아지는 방향이 **다른 학습자의 최근 출제를 피하는 쪽**이다. 새 학습자의 후보가
+  남의 이력으로 움직인다
+- 피한 목록을 `excluded_recent` 로 **응답에 실어 보낸다.** 없는 이름으로 물으면
+  다른 학습자의 최근 글자열이 호출자(MCP → LLM)에게 그대로 보였다. 재현:
+  `['LVW', 'VWB']`
+
+고침: **이름을 줬는데 없는 이름**이면 "그 학습자, 기록 없음" 으로 보고 최근
+출제를 비운다. **이름을 주지 않은** 경우는 §46 의 결정("학습자를 모르면 누구
+에게든 최근에 나간 것을 피한다") 그대로다 — 호출자가 학습자를 특정하지 않았으니
+그쪽은 보수적으로 두는 것이 맞다.
+
+### 마지막 점검 — 이름 조회의 `None` 을 넘기는 곳
+
+| 이름 조회 | 없는 이름 | |
+|---|---|---|
+| `/capabilities` | 집계를 부르지 않음 | 원래 막힘 |
+| `/item-bank` | 최근 출제 비움 | **§54** |
+| `/learners/{name}/stats` | 빈 통계 | §53 |
+| `/learners/{name}/progress` | 빈 통계 | §52 |
+| `agent.build_context()` | 기록 없음 + 기본 쌍 | **§54** |
+| `db.get_or_create_learner()` | 만든다 — `None` 이 없다 | 해당 없음 |
+
+`session.py` 는 `learner_id` 프로퍼티가 시작 전이면 예외를 내므로 `None` 이 집계로
+가지 않는다. `mcp_server` 는 DB 를 보지 않는다(REST 클라이언트, §46).
+
+### 빈 DB 전제 테스트
+
+§53 의 결함은 **학습자가 하나뿐인 DB** 에서 돈 테스트가 놓쳤다. 전수로 봤다.
+
+- `tests/test_stats.py` 의 학습자별 테스트는 **전부** 학습자가 하나다 (깊이쌍
+  해금, 세션별 추이). 필터가 빠져도 통과한다
+- `tests/test_agent.py` 의 `context` 픽스처는 빈 DB 에서 `haru` — 즉 **없는
+  이름** 경로다. 에이전트 테스트 전부가 다른 학습자 없는 상태의 신규 경로였다
+- `test_get_learner_stats_accepts_a_name_with_no_history` (MCP) 는 빈 DB — §53
+  에서 기록을 심은 짝을 더했다
+
+기존 테스트는 고치지 않았다. 대신 **두 학습자를 심고 학습자 범위 집계 전부**
+(`track_summary`, `accuracy_by_hold_ms`, `recent_items`, `recent_letters`,
+`confusion_counts`, `weakest_pairs`, `depth_unlock_progress`, `session_accuracy`)
+가 자기 것만 세는지 한 번에 보는 테스트를 더했다.
+
+### 회귀 테스트
+
+모두 다른 학습자의 기록을 먼저 심는다. 위 다섯은 고치기 전 코드에서 실패함을
+확인했다. 아래 둘은 지키는 테스트다 — 고치기 전에도 통과한다.
+
+- `test_context_for_an_unknown_name_carries_no_other_learner_data` — 요약 0,
+  최근 문항 없음, 심은 쌍이 약점에 없음, 프롬프트에 심은 글자열 없음
+- `test_an_unknown_name_gets_the_config_default_pairs`
+- `test_rule_fallback_for_an_unknown_name_says_there_is_no_history`
+- `test_a_known_learner_with_records_still_reports_history`
+- `test_item_bank_for_an_unknown_name_ignores_other_learners_history`
+- `test_item_bank_without_a_name_still_avoids_everyones_recent_items` — §46 경로 유지
+- `test_every_learner_scoped_aggregate_counts_only_that_learner`
+
+---

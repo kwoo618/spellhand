@@ -1395,3 +1395,41 @@ def test_stats_of_a_known_name_are_still_scoped_to_that_learner(client, station)
     mina = client.get("/api/learners/mina/stats").json()
     assert haru["by_track"][TRACK_DISCRIMINATION]["answered"] == answer_count
     assert mina["by_track"][TRACK_DISCRIMINATION]["answered"] == 1
+
+
+def test_item_bank_for_an_unknown_name_ignores_other_learners_history(client, station):
+    """이름을 줬는데 없는 이름이면 "그 학습자, 기록 없음" 이다 (DECISIONS §54).
+
+    예전에는 이름을 안 준 경우와 같은 길로 떨어져 **모든 학습자의** 최근
+    출제를 피했고, 그 목록을 `excluded_recent` 로 응답에 그대로 실어 보냈다 —
+    남의 최근 문항이 새 학습자의 후보 선택을 움직이고, 호출자에게 보이기까지
+    했다. 다른 학습자의 기록을 먼저 심고 본다."""
+    sid = start(client)["session_id"]
+    for _ in range(2):
+        client.get(f"/api/sessions/{sid}/next")
+        client.post(f"/api/sessions/{sid}/present")
+        answer_correctly(client, station, sid)
+    params = {"track": TRACK_DISCRIMINATION, "length": 3, "count": 5}
+    haru = client.get("/api/item-bank", params={**params, "learner_name": "haru"})
+    assert haru.json()["excluded_recent"], "심은 기록이 최근 출제로 안 잡혀 이 테스트가 아무것도 보지 않는다"
+
+    body = client.get(
+        "/api/item-bank", params={**params, "learner_name": "nobody"}
+    ).json()
+    assert body["excluded_recent"] == []
+    assert body["depth_pairs_unlocked"] is False
+
+
+def test_item_bank_without_a_name_still_avoids_everyones_recent_items(client, station):
+    """이름을 **주지 않은** 경우는 §46 의 결정 그대로다 — 학습자를 모르면
+    누구에게든 최근에 나간 것을 피한다. 이번 수정은 이 경로를 바꾸지 않는다."""
+    sid = start(client)["session_id"]
+    client.get(f"/api/sessions/{sid}/next")
+    client.post(f"/api/sessions/{sid}/present")
+    answer_correctly(client, station, sid)
+
+    body = client.get(
+        "/api/item-bank",
+        params={"track": TRACK_DISCRIMINATION, "length": 3, "count": 5},
+    ).json()
+    assert body["excluded_recent"]

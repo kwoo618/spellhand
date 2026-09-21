@@ -1336,3 +1336,85 @@ def test_a_stop_during_a_planned_item_is_a_structured_rejection(config, clock):
         assert station.lock.holder() == session_id
         # 거부된 문항은 큐에 그대로 남아 다시 낼 수 있다.
         assert len(station.plans.for_session(session_id).queue) == 3
+
+
+# --------------------------------------------------------------------------- #
+# 없는 이름의 계획 맥락 — 남의 기록이 섞이지 않는다 (DECISIONS §54)
+# --------------------------------------------------------------------------- #
+
+def _seed_other_learner(db, config):
+    """다른 학습자의 기록을 심는다. **빈 DB 에서 돌리지 않기 위한 것이다** —
+    §53 에서 빈 DB 테스트가 필터 누락을 놓쳤다.
+
+    설정 순서의 **마지막** 비깊이쌍을 틀리게 한다. 기본 쌍(설정 순서 앞쪽)과
+    겹치지 않아야, 새어 들어왔을 때 약점 쌍에서 드러난다."""
+    from tests.test_stats import Recorder
+
+    target = [p for p in config.confusion_pairs if not p.depth][-1]
+    a, b = target.pair
+    rec = Recorder(db, learner_name="mina")
+    for index in range(6):
+        rec.add(
+            TRACK_DISCRIMINATION,
+            f"{a}{b}{sorted(config.poses)[index % 3]}",
+            "wrong",
+            confusions=((a, b),),
+        )
+    rec.add(TRACK_WORD, "WISE", "correct")
+    return tuple(target.pair), f"{a}{b}"
+
+
+def test_context_for_an_unknown_name_carries_no_other_learner_data(config, words, db):
+    seeded_pair, seeded_letters = _seed_other_learner(db, config)
+    mina = build_context(config, words, db, "mina", discrimination_items=4, word_items=2)
+    assert seeded_pair in mina.weakest_pairs, "심은 기록이 약점 쌍에 안 잡혀 이 테스트가 아무것도 보지 않는다"
+
+    context = build_context(
+        config, words, db, "nobody", discrimination_items=4, word_items=2
+    )
+    assert context.learner_id is None
+    for track in (TRACK_DISCRIMINATION, TRACK_WORD):
+        assert context.summaries[track]["answered"] == 0
+        assert context.recent[track] == ()
+    assert seeded_pair not in context.weakest_pairs
+
+    _, user = build_prompt(context, "기준선")
+    assert seeded_letters not in user
+    assert '"learner_history": "none"' in user
+
+
+def test_an_unknown_name_gets_the_config_default_pairs(config, words, db):
+    """신규 학습자의 목표 쌍은 **규칙 세션이 같은 학습자에게 고를 쌍과 같다** —
+    `weakest_pairs` 의 설정 순서 폴백 그대로다 (DECISIONS §54)."""
+    from server.stats import default_pairs
+
+    _seed_other_learner(db, config)
+    context = build_context(
+        config, words, db, "nobody", discrimination_items=4, word_items=2
+    )
+    expected = tuple(
+        tuple(p.pair) for p in default_pairs(config, top=2, exclude_depth=True)
+    )
+    assert context.weakest_pairs == expected
+    assert len(expected) == 2
+
+
+def test_rule_fallback_for_an_unknown_name_says_there_is_no_history(config, words, db):
+    """교사가 읽는 근거 문장이 "약점 쌍" 을 안다고 말하지 않는다."""
+    _seed_other_learner(db, config)
+    context = build_context(
+        config, words, db, "nobody", discrimination_items=4, word_items=2
+    )
+    plan = rule_plan(config, words, context, rng=random.Random(1))
+    assert "기록이 없" in plan.rationale
+    assert plan.target_pairs == context.weakest_pairs
+
+
+def test_a_known_learner_with_records_still_reports_history(config, words, db):
+    _seed_other_learner(db, config)
+    context = build_context(
+        config, words, db, "mina", discrimination_items=4, word_items=2
+    )
+    _, user = build_prompt(context, "이어서")
+    assert '"learner_history": "recorded"' in user
+    assert context.summaries[TRACK_DISCRIMINATION]["answered"] == 6

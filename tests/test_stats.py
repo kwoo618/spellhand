@@ -19,10 +19,13 @@ from server.db import (
     utcnow,
 )
 from server.stats import (
+    accuracy_by_hold_ms,
     confusion_counts,
+    default_pairs,
     depth_unlock_progress,
     depth_unlocked,
     item_contains_depth_pair,
+    recent_items,
     recent_letters,
     session_accuracy,
     track_summary,
@@ -500,3 +503,87 @@ def test_answered_sessions_skip_sessions_with_no_answers(db):
 
     with db.session() as session:
         assert count_answered_sessions(session, rec.learner_id) == 1
+
+
+# --------------------------------------------------------------------------- #
+# 학습자 범위 — 학습자가 둘 이상일 때 (DECISIONS §54)
+# --------------------------------------------------------------------------- #
+
+def test_every_learner_scoped_aggregate_counts_only_that_learner(db, config):
+    """위의 학습자별 테스트는 전부 학습자가 **하나뿐인** DB 에서 돈다. 그러면
+    `learner_id` 필터가 빠져도 결과가 같아 통과한다 — §53 의 결함이 그렇게
+    숨었다. 여기서는 기록이 다른 두 학습자를 심고 함수마다 자기 것만 세는지
+    본다."""
+    target = [p for p in config.confusion_pairs if not p.depth][-1]
+    a, b = target.pair
+
+    haru = Recorder(db, learner_name="haru")
+    haru.add(TRACK_DISCRIMINATION, "VWB", "correct")
+
+    mina = Recorder(db, learner_name="mina")
+    for _ in range(3):
+        mina.add(TRACK_DISCRIMINATION, f"{a}{b}L", "wrong", confusions=((a, b),))
+
+    with db.session() as session:
+        def scoped(learner):
+            return dict(
+                summary=track_summary(
+                    session, TRACK_DISCRIMINATION, learner_id=learner.learner_id
+                ).answered,
+                holds=sum(
+                    bucket.answered
+                    for bucket in accuracy_by_hold_ms(
+                        session, TRACK_DISCRIMINATION, learner_id=learner.learner_id
+                    )
+                ),
+                recent=[
+                    r.letters
+                    for r in recent_items(
+                        session, TRACK_DISCRIMINATION, limit=20,
+                        learner_id=learner.learner_id,
+                    )
+                ],
+                letters=list(
+                    recent_letters(
+                        session, TRACK_DISCRIMINATION, window=20,
+                        learner_id=learner.learner_id,
+                    )
+                ),
+                confusions=[
+                    c.pair
+                    for c in confusion_counts(
+                        session, config, TRACK_DISCRIMINATION,
+                        learner_id=learner.learner_id,
+                    )
+                ],
+                weakest=[
+                    tuple(p.pair)
+                    for p in weakest_pairs(
+                        session, config, TRACK_DISCRIMINATION, top=2,
+                        learner_id=learner.learner_id,
+                    )
+                ],
+                depth=depth_unlock_progress(
+                    session, config, TRACK_DISCRIMINATION,
+                    learner_id=learner.learner_id,
+                ).answered,
+                sessions=[
+                    p.answered
+                    for p in session_accuracy(
+                        session, TRACK_DISCRIMINATION,
+                        learner_id=learner.learner_id,
+                    )
+                ],
+            )
+
+        mine, theirs = scoped(haru), scoped(mina)
+
+    assert mine == dict(
+        summary=1, holds=1, recent=["VWB"], letters=["VWB"], confusions=[],
+        weakest=[tuple(p.pair) for p in default_pairs(config, top=2)],
+        depth=1, sessions=[1],
+    )
+    assert theirs["summary"] == 3
+    assert theirs["confusions"] == [tuple(sorted((a, b)))]
+    assert tuple(target.pair) in theirs["weakest"]
+    assert tuple(target.pair) not in mine["weakest"]

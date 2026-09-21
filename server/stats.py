@@ -41,6 +41,7 @@ __all__ = [
     "recent_items",
     "confusion_counts",
     "weakest_pairs",
+    "default_pairs",
     "session_accuracy",
     "depth_unlock_progress",
     "depth_unlocked",
@@ -392,18 +393,40 @@ def weakest_pairs(
             continue
         ranked.append(pair)
 
-    if len(ranked) < top:
-        # 기록이 부족하면 설정 순서대로 채운다. 훈련 첫 세션에도 목표 쌍이 있어야
-        # 한다.
+    # 기록이 부족하면 설정 순서대로 채운다. 훈련 첫 세션에도 목표 쌍이 있어야
+    # 한다.
+    return default_pairs(
+        config, top=top, exclude_depth=exclude_depth, ranked=ranked
+    )
+
+
+def default_pairs(
+    config: Config,
+    *,
+    top: int,
+    exclude_depth: bool = True,
+    ranked: Sequence[ConfusionPair] = (),
+) -> Tuple[ConfusionPair, ...]:
+    """`ranked` 를 앞에 두고 모자라는 만큼 **설정 순서**로 채운다.
+
+    `weakest_pairs()` 의 폴백이 이것이다. 따로 꺼낸 이유는 **아직 없는 학습자**
+    다 — DB 에 행이 없으니 `learner_id` 가 없고, `weakest_pairs()` 에
+    `learner_id=None` 을 넘기면 모든 학습자의 혼동을 센다. 그런 호출자는
+    기록을 읽지 않고 이것만 부른다 (DECISIONS.md §54). 기록이 없는 학습자에게
+    `weakest_pairs()` 가 낼 값과 **같은 코드**에서 나온다.
+
+    DB 를 보지 않는다. 트랙도 받지 않는다 — 설정의 혼동쌍 목록은 트랙과 무관하다.
+    """
+    chosen: List[ConfusionPair] = list(ranked)
+    if len(chosen) < top:
         for pair in config.confusion_pairs:
             if exclude_depth and pair.depth:
                 continue
-            if pair not in ranked:
-                ranked.append(pair)
-            if len(ranked) >= top:
+            if pair not in chosen:
+                chosen.append(pair)
+            if len(chosen) >= top:
                 break
-
-    return tuple(ranked[:top])
+    return tuple(chosen[:top])
 
 
 def session_accuracy(
