@@ -598,3 +598,28 @@ def test_a_bad_argument_that_the_schema_lets_through_is_reported(mcp):
     # 않고 코드를 소문자로 옮긴다.
     assert body["reason"] == "session_state"
     assert REASON_INVALID_ARGUMENTS not in body["reason"]
+
+
+def test_get_learner_stats_for_an_unknown_name_ignores_other_learners(mcp, station):
+    """위 테스트는 DB 가 비어 있어 필터가 빠져도 통과했다. **다른 학습자의
+    기록이 있을 때** 없는 이름을 물으면 0 이어야 한다 (DECISIONS §53).
+
+    실패(`ok: false`)가 아니라 빈 통계다 — MCP 로그 패널에서 새 학습자 조회가
+    "차단" 으로 붉게 뜨면 안 된다."""
+    session_id = start(mcp)
+    call(
+        mcp,
+        "present_sequence",
+        session_id=session_id,
+        letters="BDE",
+        track=TRACK_DISCRIMINATION,
+        boundary="explicit",
+    )
+    call(mcp, "submit_answer", session_id=session_id, answer="BDE")
+    call(mcp, "end_session", session_id=session_id)
+
+    body = call(mcp, "get_learner_stats", learner_name="아무도")
+    assert body["ok"] is True
+    assert body["learner_id"] is None
+    assert body["by_track"][TRACK_DISCRIMINATION]["answered"] == 0
+    assert body["by_track"][TRACK_DISCRIMINATION]["recent_items"] == []

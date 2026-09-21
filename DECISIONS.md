@@ -2757,3 +2757,79 @@ PRD 14장·README·시연 대본이 예전 주소를 적고 있다. 발표장에
 - 내 진행이 길면 모드 전환이 화면 밖으로 밀려나 사이드바를 붙였다(sticky)
 
 ---
+
+## 53. 없는 이름의 학습자 상세는 빈 통계다 — 404 가 아니다
+
+**증상.** `GET /api/learners/{name}/stats` 에 없는 이름을 주면 **모든 학습자의
+기록**이 그 이름의 통계로 나갔다. 교사 화면과 MCP `get_learner_stats` 가 쓰는
+경로다. 실데이터 수집에서 이름 오타 하나면 남의 정확도·혼동 쌍·최근 문항이 섞인다.
+
+**원인.** `_learner_id_by_name()` 은 없는 이름에 `None` 을 낸다. 그런데 stats.py
+의 집계 함수는 `learner_id=None` 을 "범위를 좁히지 않는다" 로 읽는다 — WHERE 절이
+빠진다. 두 뜻("없는 학습자" 와 "전체")이 같은 값에 겹쳐 있었다.
+
+`test_get_learner_stats_accepts_a_name_with_no_history` 가 있었지만 **DB 가 빈
+상태**에서 돌아 필터가 빠져도 0 이 나왔다. 회귀 테스트는 다른 학습자의 기록을
+먼저 심고 본다.
+
+**고침.** 라우트에서 이름이 없으면 집계를 부르지 않고 0·빈 목록을 낸다. stats.py
+의 계산은 바꾸지 않았다.
+
+### 404 가 아니라 빈 통계인 이유
+
+1. **이미 약속된 계약이다.** 라우트 docstring, MCP 도구 설명("기록이 없는 이름도
+   정상이며 0 으로 채워 나온다"), 테스트가 셋 다 빈 통계를 적고 있다. 결함은
+   약속이 아니라 약속을 지키는 방법에 있었다
+2. **새 학습자 조회는 정상 경로다.** 교사가 첫 세션 전의 참여자로 계획을 만들기
+   전에 성적을 물어보는 것이 그렇다. 404 면 MCP 어댑터가 `status >= 400` 을
+   `blocked` 로 로그에 올린다 — 시연 ⑥ 의 로그 패널에 새 학습자 조회가 "차단" 으로
+   붉게 뜬다. 차단이 아닌 것이 차단으로 보이면 패널 전체의 신뢰가 깎인다
+3. **오타는 이미 구분된다.** 없는 이름은 `learner_id: null` 이고, 있지만 기록이
+   없는 학습자는 정수 id 에 0 이다. 둘을 가르는 칸이 응답에 있다
+4. 진행 창구(§52)도 같은 규칙이다. 같은 질문에 두 창구가 다르게 답하지 않는다
+
+### 같은 결함이 있는가 — stats.py 전체
+
+`learner_id` 를 `Optional` 로 받아 `None` 을 "전체" 로 읽는 함수:
+`_answered_items`, `track_summary`, `accuracy_by_hold_ms`, `recent_items`,
+`confusion_counts`, `weakest_pairs`, `recent_letters`. `session_accuracy` 는
+`int` 로 선언했지만 `None` 을 넘기면 같다. `depth_unlock_progress` 와
+`depth_unlocked` 만 `None` 을 "기록 없음" 으로 막는다 (§52).
+
+**함수 쪽은 결함이 아니다** — `None` = 전체는 의도된 쓰임이 있다
+(`/stats/confusion` 의 학습자 미지정). 결함은 **이름 조회 결과(`None`)를 그대로
+넘기는 호출자**에 있다. 호출자 전수:
+
+| 경로 | 없는 이름일 때 | 상태 |
+|---|---|---|
+| `/learners/{name}/stats` | 전체 집계 | **이번에 고침** |
+| `/learners/{name}/progress` | 막혀 있음 (§52) | 그대로 |
+| `/capabilities` | 막혀 있음 | 그대로 |
+| `/stats/confusion` | 이름을 받지 않는다. 미지정 = 전체가 의도 | 그대로 |
+| `/stats/learners/{id}` | 정수 id. 없는 id 는 아무것도 안 걸린다 | 그대로 |
+| `session.py` | 세션 시작 뒤의 실제 id 만 쓴다 | 그대로 |
+| **`agent.build_context()`** | **`track_summary`·`weakest_pairs`·`recent_letters` 가 전체** | **미해결** |
+| `/item-bank` (`learner_name` 이 없는 이름) | `recent_letters` 가 전체 | 미해결 |
+
+**`agent.build_context()` 는 확인했다.** 기록 있는 학습자 하나를 심고 없는 이름으로
+맥락을 만들면 그 학습자의 판별 요약(6문항, 정확도 0%)과 최근 글자열이 그대로
+들어온다. 이 맥락은 LLM 프롬프트와 계획 검증으로 간다. **실데이터 수집에서 첫 세션
+전 참여자의 계획이 앞 참여자들의 성적으로 만들어진다** — "승인 후 바로 참여"
+(§50.5) 흐름이 정확히 그 경우다. 고치지 않은 것은 이번 지시 범위("확인할 것")
+밖이고, `weakest_pairs` 의 "기록 없음" 을 stats.py 에 어떻게 전할지 정해야 하기
+때문이다 — 라우트처럼 0 을 채우면 되는 모양이 아니다(설정 순서 폴백이 함수 안에
+있다).
+
+`/item-bank` 는 이름이 없을 때 "최근 출제는 학습자를 가리지 않는다" 가 docstring
+의 의도다(§46). 없는 이름이 그 경로로 떨어지는 것은 같은 모양이지만, 결과는 후보를
+**더 좁히는** 쪽이라 통계가 섞이지는 않는다.
+
+### 회귀 테스트
+
+- `test_stats_of_an_unknown_name_do_not_aggregate_everyone` — 다른 학습자에 혼동
+  기록까지 심은 뒤 없는 이름이 0·빈 목록인지. 고치기 전 코드에서 실패함을 확인
+- `test_stats_of_a_known_name_are_still_scoped_to_that_learner`
+- `test_get_learner_stats_for_an_unknown_name_ignores_other_learners` (MCP 경유,
+  `ok: true`) — 고치기 전 코드에서 실패함을 확인
+
+---

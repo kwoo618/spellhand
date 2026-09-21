@@ -48,6 +48,7 @@ from server.session import (
     starting_difficulty,
 )
 from server.stats import (
+    TrackSummary,
     accuracy_by_hold_ms,
     confusion_counts,
     depth_unlock_progress,
@@ -828,6 +829,11 @@ def learner_stats_by_name(request: Request, learner_name: str) -> Dict[str, Any]
 
     **트랙별로만** 낸다. 모든 수치가 트랙 아래에 들어 있어 합친 숫자를 담을
     자리가 구조에 없다. 기록이 없는 이름도 정상이다 — 0 으로 채워 낸다.
+
+    **없는 이름이면 집계를 부르지 않는다** (DECISIONS.md §53). 집계 함수는
+    `learner_id=None` 을 "범위 없음" 으로 읽어 모든 학습자를 센다 — 오타 한
+    번이면 남의 기록이 이 이름의 통계로 나갔다. 404 가 아니라 빈 통계인 이유와
+    `learner_id: null` 이 "없는 이름" 의 표시인 것도 §53 에 있다.
     """
     station = _station(request)
     learner_id = _learner_id_by_name(station, learner_name)
@@ -836,7 +842,23 @@ def learner_stats_by_name(request: Request, learner_name: str) -> Dict[str, Any]
     unlocked = False
     with station.database.session() as db:
         for track in TRACKS:
-            summary = track_summary(db, track, learner_id=learner_id)
+            if learner_id is None:
+                summary = TrackSummary(
+                    track=track, answered=0, correct=0, wrong=0,
+                    length_errors=0, order_errors=0, avg_response_ms=None,
+                )
+                confusions: Sequence[Any] = ()
+                buckets: Sequence[Any] = ()
+                records: Sequence[Any] = ()
+            else:
+                summary = track_summary(db, track, learner_id=learner_id)
+                confusions = confusion_counts(
+                    db, station.config, track, learner_id=learner_id
+                )
+                buckets = accuracy_by_hold_ms(db, track, learner_id=learner_id)
+                records = recent_items(
+                    db, track, limit=RECENT_ITEM_WINDOW, learner_id=learner_id
+                )
             by_track[track] = {
                 "answered": summary.answered,
                 "correct": summary.correct,
@@ -848,9 +870,7 @@ def learner_stats_by_name(request: Request, learner_name: str) -> Dict[str, Any]
                 "avg_response_ms": summary.avg_response_ms,
                 "confusions": [
                     {"pair": list(c.pair), "count": c.count, "listed": c.listed}
-                    for c in confusion_counts(
-                        db, station.config, track, learner_id=learner_id
-                    )
+                    for c in confusions
                 ],
                 "accuracy_by_hold_ms": [
                     {
@@ -859,18 +879,10 @@ def learner_stats_by_name(request: Request, learner_name: str) -> Dict[str, Any]
                         "correct": bucket.correct,
                         "accuracy": bucket.accuracy,
                     }
-                    for bucket in accuracy_by_hold_ms(
-                        db, track, learner_id=learner_id
-                    )
+                    for bucket in buckets
                 ],
                 "recent_items": [
-                    dataclasses.asdict(record)
-                    for record in recent_items(
-                        db,
-                        track,
-                        limit=RECENT_ITEM_WINDOW,
-                        learner_id=learner_id,
-                    )
+                    dataclasses.asdict(record) for record in records
                 ],
             }
         if learner_id is not None:

@@ -1339,3 +1339,59 @@ def test_progress_of_an_unknown_name_does_not_count_other_learners(client, stati
     assert body["depth_pairs"]["answered"] == 0
     # 조회가 학습자를 만들지 않는다.
     assert client.get("/api/learners").json()["learners"] == ["haru"]
+
+
+# --------------------------------------------------------------------------- #
+# 없는 이름의 학습자 상세 — 남의 기록을 세지 않는다 (DECISIONS §53)
+# --------------------------------------------------------------------------- #
+
+def test_stats_of_an_unknown_name_do_not_aggregate_everyone(client, station):
+    """**다른 학습자의 기록이 있는 상태**에서 본다. 기록이 비어 있으면 필터가
+    빠져도 0 이 나와 이 결함이 보이지 않는다 — 예전 테스트가 그랬다.
+
+    혼동·유지 시간·최근 문항까지 전부 비어야 한다. 요약 숫자만 막고 목록을
+    놓치면 남의 글자열이 이 이름으로 나간다."""
+    sid = start(client)["session_id"]
+    _answer_wrong_twice(client, station, sid)
+    answer_correctly(client, station, sid)
+    haru = client.get("/api/learners/haru/stats").json()
+    assert haru["by_track"][TRACK_DISCRIMINATION]["answered"] > 0
+    assert haru["by_track"][TRACK_DISCRIMINATION]["confusions"]
+
+    response = client.get("/api/learners/nobody/stats")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["learner_id"] is None
+    assert body["depth_pairs_unlocked"] is False
+    for track in (TRACK_DISCRIMINATION, TRACK_WORD):
+        stats = body["by_track"][track]
+        assert stats["answered"] == 0
+        assert stats["accuracy"] is None
+        assert stats["avg_response_ms"] is None
+        assert stats["confusions"] == []
+        assert stats["accuracy_by_hold_ms"] == []
+        assert stats["recent_items"] == []
+    # 조회가 학습자를 만들지 않는다.
+    assert client.get("/api/learners").json()["learners"] == ["haru"]
+
+
+def test_stats_of_a_known_name_are_still_scoped_to_that_learner(client, station):
+    """고친 뒤에도 있는 이름은 그 학습자만 센다. 다른 학습자가 섞이지 않는다."""
+    sid = start(client)["session_id"]
+    answer_count = 0
+    for _ in range(2):
+        client.get(f"/api/sessions/{sid}/next")
+        client.post(f"/api/sessions/{sid}/present")
+        answer_correctly(client, station, sid)
+        answer_count += 1
+    client.post("/api/device/reset")
+
+    other = start(client, learner_name="mina")["session_id"]
+    client.get(f"/api/sessions/{other}/next")
+    client.post(f"/api/sessions/{other}/present")
+    answer_correctly(client, station, other)
+
+    haru = client.get("/api/learners/haru/stats").json()
+    mina = client.get("/api/learners/mina/stats").json()
+    assert haru["by_track"][TRACK_DISCRIMINATION]["answered"] == answer_count
+    assert mina["by_track"][TRACK_DISCRIMINATION]["answered"] == 1
