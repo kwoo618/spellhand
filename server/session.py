@@ -21,6 +21,8 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Callable, Dict, List, Mapping, Optional, Protocol, Tuple
 
+from sqlalchemy.orm import Session as DbSession
+
 from server import judge as judge_module
 from server.config import Config, WordSet
 from server.db import (
@@ -69,6 +71,7 @@ from server.stats import (
 __all__ = [
     "HOLD_DECAY_ON_CORRECT",
     "DIFFICULTY_LADDER",
+    "starting_difficulty",
     "ItemPrompt",
     "DemoShown",
     "ItemOutcome",
@@ -98,6 +101,42 @@ DIFFICULTY_LADDER: Tuple[Tuple[int, str], ...] = (
     (5, BOUNDARY_DIRECT),
     (7, BOUNDARY_DIRECT),
 )
+
+
+def starting_difficulty(
+    db: DbSession, config: Config, learner_id: Optional[int], track: str
+) -> Difficulty:
+    """이 학습자가 그 트랙에서 **다음 세션을 시작할** 난이도.
+
+    저장된 마지막 자리가 있으면 거기서, 없으면 사다리 첫 단에서 시작한다.
+
+    세션이 난이도를 복원할 때와 학습자 진행 화면이 "지금 난이도" 를 보일 때
+    **둘 다 여기를 부른다.** 화면이 따로 계산하면 이력이 없는 학습자에게
+    다른 값을 보이게 된다 — 화면에는 3000ms 인데 세션은 다른 값으로 시작하는
+    식이다.
+
+    `transition_ms` 는 이월하지 않고 항상 기본값으로 시작한다. 난이도 축이
+    아니라 오답 재생에서만 늘리는 값이라(PRD 9.1), 이월하면 다음 세션이
+    느린 재생 상태로 시작한다 (DECISIONS.md §40).
+
+    `learner_id` 가 `None` 이면 아직 없는 학습자다 — 첫 세션의 자리를 낸다.
+    """
+    saved = (
+        load_difficulty(db, learner_id, track) if learner_id is not None else None
+    )
+    if saved is None:
+        return Difficulty(
+            length=DIFFICULTY_LADDER[0][0],
+            hold_ms=config.timing.hold_default_ms,
+            transition_ms=config.timing.transition_ms,
+            boundary=DIFFICULTY_LADDER[0][1],
+        )
+    return Difficulty(
+        length=saved.length,
+        hold_ms=saved.hold_ms,
+        transition_ms=config.timing.transition_ms,
+        boundary=saved.boundary,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -548,27 +587,9 @@ class SessionController:
         return session_id
 
     def _restore_difficulty(self, learner_id: int, track: str) -> Difficulty:
-        """이 학습자가 그 트랙에서 마지막에 있던 자리. 이력이 없으면 초기값.
-
-        `transition_ms` 는 이월하지 않고 항상 기본값으로 시작한다. 난이도 축이
-        아니라 오답 재생에서만 늘리는 값이라(PRD 9.1), 이월하면 다음 세션이
-        느린 재생 상태로 시작한다 (DECISIONS.md §40).
-        """
+        """이 학습자가 그 트랙에서 마지막에 있던 자리. 이력이 없으면 초기값."""
         with self._db.session() as db:
-            saved = load_difficulty(db, learner_id, track)
-            if saved is None:
-                return Difficulty(
-                    length=DIFFICULTY_LADDER[0][0],
-                    hold_ms=self._config.timing.hold_default_ms,
-                    transition_ms=self._config.timing.transition_ms,
-                    boundary=DIFFICULTY_LADDER[0][1],
-                )
-            return Difficulty(
-                length=saved.length,
-                hold_ms=saved.hold_ms,
-                transition_ms=self._config.timing.transition_ms,
-                boundary=saved.boundary,
-            )
+            return starting_difficulty(db, self._config, learner_id, track)
 
     def _persist_difficulty(self, track: str) -> None:
         """이 트랙의 지금 난이도를 저장한다. 다음 세션이 여기서 이어 간다."""

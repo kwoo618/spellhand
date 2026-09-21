@@ -24,6 +24,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     create_engine,
+    func,
     select,
 )
 from sqlalchemy.orm import (
@@ -59,6 +60,7 @@ __all__ = [
     "DEVICE_LOCK_ID",
     "load_difficulty",
     "save_difficulty",
+    "count_answered_sessions",
 ]
 
 # 트랙. 이 둘의 통계는 어떤 경로로도 섞이지 않는다 (PRD 9.2).
@@ -304,3 +306,23 @@ def save_difficulty(
     row.updated_at = now or utcnow()
     session.flush()
     return row
+
+
+def count_answered_sessions(session: Session, learner_id: int) -> int:
+    """학습자가 **한 문항이라도 답한** 세션 수.
+
+    `sessions` 행을 그대로 세지 않는다. 승인만 되고 아무도 참여하지 않은 세션,
+    락을 못 잡고 곧바로 닫힌 세션(DECISIONS.md §49)도 행은 남는다. 그것을
+    "누적 세션" 으로 세면 학습자가 하지 않은 일이 기록에 얹힌다.
+
+    트랙을 가리지 않는다. 세는 것은 세션이지 성적이 아니다 — 정확도 같은
+    지표는 여전히 트랙별로만 나온다 (`server/stats.py`).
+    """
+    return session.scalar(
+        select(func.count(func.distinct(Item.session_id)))
+        .join(TrainingSession, TrainingSession.id == Item.session_id)
+        .where(
+            TrainingSession.learner_id == learner_id,
+            Item.result.is_not(None),
+        )
+    ) or 0

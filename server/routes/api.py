@@ -25,6 +25,8 @@ from server.db import (
     TRACK_WORD,
     TRACKS,
     Learner,
+    count_answered_sessions,
+    load_difficulty,
 )
 from server.device import DEVICE_MODE_SERIAL
 from server.items import (
@@ -43,11 +45,14 @@ from server.session import (
     SessionPlan,
     SessionState,
     SessionStateError,
+    starting_difficulty,
 )
 from server.stats import (
     accuracy_by_hold_ms,
     confusion_counts,
+    depth_unlock_progress,
     depth_unlocked,
+    session_accuracy,
     recent_items,
     recent_letters,
     track_summary,
@@ -73,6 +78,10 @@ MCP_LOG_TYPES = (
     "plan_decided",
     "blocked",
 )
+
+# 학습자 진행 화면의 추이에 싣는 최근 세션 수. 설정에 출처가 없는 화면 값이라
+# 여기 둔다 (DECISIONS.md §19). 4주차 수집은 학습자당 2세션이므로 넉넉하다.
+PROGRESS_SESSION_LIMIT = 20
 
 # 후보 문항을 몇 번 뽑아 보고 멈출 것인가. items.py 의 `_MAX_ATTEMPTS` 와 같은
 # 역할이지만 저쪽은 문항 하나 기준이고 이쪽은 목록 하나 기준이라 재사용하지
@@ -875,6 +884,109 @@ def learner_stats_by_name(request: Request, learner_name: str) -> Dict[str, Any]
         # §20: 판별 트랙에만 걸리는 게이트다.
         "depth_pairs_unlocked": unlocked,
         "by_track": by_track,
+    }
+
+
+@router.get("/learners/{learner_name}/progress")
+def learner_progress(request: Request, learner_name: str) -> Dict[str, Any]:
+    """학습자가 **자기** 진행을 보는 창구 (DECISIONS.md §52).
+
+    `/learners/{name}/stats` 와 다른 창구인 이유가 이 엔드포인트의 전부다.
+    저쪽은 교사·에이전트용이라 혼동 쌍·최근 문항의 글자·유지 시간별 정확도를
+    낸다. **이쪽은 그것을 내지 않는다.** 학습자가 "나는 V 와 W 를 헷갈린다" 를
+    알고 문항을 풀면 그것은 순수 판별이 아니다 — 측정이 오염된다.
+
+    그래서 필드를 걸러 내지 않고 **처음부터 담지 않는다.** 저쪽 응답에서
+    지우는 방식이면 저쪽에 칸이 늘 때 이쪽으로 샌다.
+
+    낸 것:
+    - 트랙별 다음 세션의 난이도 — 세션이 복원할 때와 같은 함수다
+    - 트랙별 문항 수·정확도, 세션별 정확도 추이
+    - 깊이쌍 해금 진척도 — 판정과 같은 계산에서 나온다 (판별 트랙만, §20)
+    - 한 문항이라도 답한 세션 수
+
+    기록이 없는 이름도 정상이다. 0 과 첫 세션의 난이도로 채워 낸다 — 첫
+    세션 전의 학습자도 이 화면을 연다.
+    """
+    station = _station(request)
+    config = station.config
+    learner_id = _learner_id_by_name(station, learner_name)
+
+    by_track: Dict[str, Any] = {}
+    with station.database.session() as db:
+        for track in TRACKS:
+            start = starting_difficulty(db, config, learner_id, track)
+            saved = (
+                load_difficulty(db, learner_id, track)
+                if learner_id is not None
+                else None
+            )
+            # `learner_id` 가 없으면 집계를 부르지 않는다. 집계 함수는
+            # `learner_id=None` 을 "범위 없음" 으로 읽어 모든 학습자를 센다.
+            summary = (
+                track_summary(db, track, learner_id=learner_id)
+                if learner_id is not None
+                else None
+            )
+            series = (
+                session_accuracy(
+                    db, track, learner_id=learner_id, limit=PROGRESS_SESSION_LIMIT
+                )
+                if learner_id is not None
+                else ()
+            )
+            by_track[track] = {
+                "answered": summary.answered if summary else 0,
+                "correct": summary.correct if summary else 0,
+                "accuracy": summary.accuracy if summary else None,
+                "difficulty": {
+                    "length": start.length,
+                    "hold_ms": start.hold_ms,
+                    "boundary": start.boundary,
+                    # 이력에서 이어 온 것인가, 첫 단인가. 화면은 이것으로
+                    # "처음 시작" 을 따로 적는다.
+                    "carried_over": saved is not None,
+                },
+                "sessions": [
+                    {
+                        "session_id": point.session_id,
+                        "started_at": (
+                            point.started_at.isoformat()
+                            if point.started_at is not None
+                            else None
+                        ),
+                        "answered": point.answered,
+                        "correct": point.correct,
+                        "accuracy": point.accuracy,
+                    }
+                    for point in series
+                ],
+            }
+
+        # §20: 판별 트랙에만 걸리는 게이트다.
+        depth = depth_unlock_progress(
+            db, config, TRACK_DISCRIMINATION, learner_id=learner_id
+        )
+        sessions = (
+            count_answered_sessions(db, learner_id) if learner_id is not None else 0
+        )
+
+    return {
+        "learner_name": learner_name,
+        "learner_id": learner_id,
+        "sessions": sessions,
+        "by_track": by_track,
+        "depth_pairs": {
+            "track": depth.track,
+            "unlocked": depth.unlocked,
+            "window_items": depth.window_items,
+            "min_accuracy": depth.min_accuracy,
+            "answered": depth.answered,
+            "counted": depth.counted,
+            "correct": depth.correct,
+            "accuracy": depth.accuracy,
+            "items_remaining": depth.items_remaining,
+        },
     }
 
 

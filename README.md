@@ -211,9 +211,8 @@ spellhand/
 │       └── events.py       이벤트 팬아웃
 ├── mcp_server/server.py    MCP 서버 (stdio). 스테이션 REST의 클라이언트
 ├── web/
-│   ├── practice.html       학습자 화면
-│   ├── teacher.html        진단 뷰 — 혼동 행렬, 계획 승인, MCP 호출 로그
-│   └── mockhand.html       Mock 손 시각화 (개발·폴백)
+│   ├── station.html        한 화면 두 모드 — 학습자(훈련·내 진행) / 교사(계획 승인·MCP 로그·혼동 행렬)
+│   └── mockhand.html       Mock 손 시각화 (개발·폴백). 교사 모드에서 새 창으로 연다
 ├── firmware/hand_controller/
 │   ├── hand_controller.ino 아두이노 펌웨어
 │   └── calibration.h       ← 생성 산출물. 커밋하지 않는다
@@ -280,13 +279,18 @@ py -3.12 -m venv .venv
 
 | 화면 | 주소 |
 |---|---|
-| 학습자 | <http://127.0.0.1:8000/practice.html> |
-| 진단 | <http://127.0.0.1:8000/teacher.html> |
+| 학습자 모드 | <http://127.0.0.1:8000/station.html> |
+| 교사 모드 | <http://127.0.0.1:8000/station.html?mode=teacher> |
 | Mock 손 | <http://127.0.0.1:8000/mockhand.html> |
 
-학습자 화면에서 이름을 넣고 시작하면 판별 8문항 + 단어 4문항 세션이 돈다.
-`mockhand.html` 을 나란히 열어 두면 손가락 flex 값이 실시간으로 보인다 — 어느
-자세인지는 브라우저가 flex 로 되짚는다.
+예전 주소 `/practice.html` · `/teacher.html` 은 각각 위 두 주소로 넘어간다.
+교사 모드는 사이드바 맨 아래 작은 링크로 들어가며, 세션 중에는 잠긴다.
+학습자 모드에는 혼동 쌍·약점 쌍이 나오지 않는다 (DECISIONS §52).
+
+학습자 모드에서 이름을 넣고 시작하면 판별 8문항 + 단어 4문항 세션이 돈다.
+"내 진행" 에서 트랙별 난이도·깊이쌍 해금 진척도·세션별 정확도를 본다.
+교사 모드의 [Mock 손 — 새 창] 으로 mockhand 를 띄우면 손가락 flex 값이 실시간으로
+보인다 — 어느 자세인지는 브라우저가 flex 로 되짚는다.
 
 **세션을 끝내지 않고 탭을 닫으면 다음 시작이 `LOCK_UNAVAILABLE` 로 막힌다.**
 한 번에 한 세션만 손을 쓸 수 있고, 락은 마지막 heartbeat 로부터 60초 뒤에
@@ -388,7 +392,7 @@ $env:DEVICE_MODE="serial"; $env:SERIAL_PORT="COM3"
 ```
 
 스테이션 서버가 떠 있지 않으면 모든 도구가 `station_unreachable` 구조화 실패를
-돌려준다. `teacher.html` 을 열어 두면 Claude Desktop 의 도구 호출이 실시간으로
+돌려준다. 교사 모드를 열어 두면 Claude Desktop 의 도구 호출이 실시간으로
 지나가는 것이 보인다 — 차단된 호출은 사유와 함께 붉게 표시된다.
 
 ### 테스트

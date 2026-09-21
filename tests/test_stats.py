@@ -14,14 +14,17 @@ from server.db import (
     Confusion,
     Item,
     TrainingSession,
+    count_answered_sessions,
     get_or_create_learner,
     utcnow,
 )
 from server.stats import (
     confusion_counts,
+    depth_unlock_progress,
     depth_unlocked,
     item_contains_depth_pair,
     recent_letters,
+    session_accuracy,
     track_summary,
     weakest_pairs,
 )
@@ -372,3 +375,128 @@ def test_recent_letters_include_unanswered_items(db):
         assert "LYB" in recent_letters(session, TRACK_DISCRIMINATION, window=20)
         # 답이 없으므로 집계에는 들어가지 않는다.
         assert track_summary(session, TRACK_DISCRIMINATION).answered == 0
+
+
+# --------------------------------------------------------------------------- #
+# 해금 진척도 — 판정과 같은 계산 (DECISIONS §52)
+# --------------------------------------------------------------------------- #
+
+def test_depth_progress_agrees_with_the_gate(db, config):
+    """진척도와 판정이 두 벌이면 조건을 고칠 때 어긋난다. 같은 값을 내야 한다."""
+    rec = Recorder(db)
+    window = config.curriculum["depth_pairs_unlock"]["window_items"]
+    for i in range(window + 3):
+        result = "correct" if i % 4 else "wrong"
+        rec.add(TRACK_DISCRIMINATION, "VW" + "BDFLY"[i % 5], result)
+        with db.session() as session:
+            progress = depth_unlock_progress(
+                session, config, TRACK_DISCRIMINATION, learner_id=rec.learner_id
+            )
+            assert progress.unlocked == depth_unlocked(
+                session, config, TRACK_DISCRIMINATION, learner_id=rec.learner_id
+            )
+            assert progress.counted == min(i + 1, window)
+            assert progress.items_remaining == max(0, window - (i + 1))
+
+
+def test_depth_progress_reports_accuracy_before_the_window_fills(db, config):
+    """창이 다 차기 전에도 지금까지의 정확도는 낸다. 판정은 아직 잠금이다."""
+    rec = Recorder(db)
+    for _ in range(5):
+        rec.add(TRACK_DISCRIMINATION, "VWB", "correct")
+
+    with db.session() as session:
+        progress = depth_unlock_progress(
+            session, config, TRACK_DISCRIMINATION, learner_id=rec.learner_id
+        )
+    assert progress.counted == 5
+    assert progress.correct == 5
+    assert progress.accuracy == 1.0
+    assert progress.unlocked is False
+
+
+def test_depth_progress_skips_depth_items_like_the_gate(db, config):
+    rec = Recorder(db)
+    rec.add(TRACK_DISCRIMINATION, "EIB", "correct")  # 깊이쌍 포함 — 세지 않는다
+    rec.add(TRACK_DISCRIMINATION, "VWB", "wrong")
+
+    with db.session() as session:
+        progress = depth_unlock_progress(
+            session, config, TRACK_DISCRIMINATION, learner_id=rec.learner_id
+        )
+    assert (progress.answered, progress.counted, progress.correct) == (1, 1, 0)
+
+
+def test_depth_progress_without_a_learner_counts_nothing(db, config):
+    """`learner_id=None` 은 "기록 없는 학습자" 다. 모든 학습자를 세지 않는다."""
+    rec = Recorder(db)
+    for _ in range(25):
+        rec.add(TRACK_DISCRIMINATION, "VWB", "correct")
+
+    with db.session() as session:
+        progress = depth_unlock_progress(
+            session, config, TRACK_DISCRIMINATION, learner_id=None
+        )
+    assert (progress.answered, progress.counted, progress.unlocked) == (0, 0, False)
+
+
+def test_depth_progress_is_scoped_to_one_track(db, config):
+    rec = Recorder(db)
+    for _ in range(30):
+        rec.add(TRACK_WORD, "WISE", "correct")
+    with db.session() as session:
+        progress = depth_unlock_progress(
+            session, config, TRACK_DISCRIMINATION, learner_id=rec.learner_id
+        )
+    assert progress.answered == 0
+    with pytest.raises(ValueError):
+        with db.session() as session:
+            depth_unlock_progress(session, config, "both", learner_id=rec.learner_id)
+
+
+# --------------------------------------------------------------------------- #
+# 세션별 추이
+# --------------------------------------------------------------------------- #
+
+def test_session_accuracy_is_per_track_and_oldest_first(db):
+    first = Recorder(db)
+    first.add(TRACK_DISCRIMINATION, "VWB", "correct")
+    first.add(TRACK_DISCRIMINATION, "VWD", "wrong")
+    first.add(TRACK_WORD, "WISE", "wrong")
+
+    second = Recorder(db)  # 같은 학습자, 새 세션
+    second.add(TRACK_DISCRIMINATION, "VWF", "correct")
+
+    with db.session() as session:
+        disc = session_accuracy(
+            session, TRACK_DISCRIMINATION, learner_id=first.learner_id
+        )
+        word = session_accuracy(session, TRACK_WORD, learner_id=first.learner_id)
+        latest = session_accuracy(
+            session, TRACK_DISCRIMINATION, learner_id=first.learner_id, limit=1
+        )
+
+    assert [p.session_id for p in disc] == [first.session_id, second.session_id]
+    assert [(p.answered, p.correct) for p in disc] == [(2, 1), (1, 1)]
+    assert disc[0].accuracy == 0.5
+    # 단어 트랙의 오답이 판별 트랙의 줄에 들어가지 않는다.
+    assert [(p.session_id, p.answered, p.correct) for p in word] == [
+        (first.session_id, 1, 0)
+    ]
+    assert [p.session_id for p in latest] == [second.session_id]
+
+
+def test_session_accuracy_requires_a_track(db):
+    with pytest.raises(ValueError):
+        with db.session() as session:
+            session_accuracy(session, "both", learner_id=1)
+
+
+def test_answered_sessions_skip_sessions_with_no_answers(db):
+    """승인만 되고 아무도 참여하지 않은 세션은 "누적 세션" 이 아니다."""
+    rec = Recorder(db)
+    rec.add(TRACK_WORD, "WISE", "correct")
+    Recorder(db)  # 빈 세션
+
+    with db.session() as session:
+        assert count_answered_sessions(session, rec.learner_id) == 1

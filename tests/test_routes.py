@@ -204,10 +204,25 @@ def test_confusion_stats_require_a_track(client):
     assert client.get("/api/stats/confusion").status_code == 422
 
 
-def test_the_index_redirects_to_practice(client):
+def test_the_index_redirects_to_the_station(client):
     response = client.get("/", follow_redirects=False)
     assert response.status_code in (302, 307)
-    assert response.headers["location"] == "/practice.html"
+    assert response.headers["location"] == "/station.html"
+
+
+def test_the_old_page_addresses_still_land_on_the_station(client):
+    """학습자 뷰와 진단 뷰는 한 화면이 됐다. 예전 주소는 살아 있어야 한다 —
+    PRD 14장과 시연 대본이 그 주소를 적고 있다 (DECISIONS §52).
+
+    `/teacher.html` 은 교사 모드로 연다. 학습자 모드로 떨어뜨리면 교사가
+    발표 중에 모드를 찾아 헤맨다."""
+    practice = client.get("/practice.html", follow_redirects=False)
+    assert practice.status_code in (302, 307)
+    assert practice.headers["location"] == "/station.html"
+
+    teacher = client.get("/teacher.html", follow_redirects=False)
+    assert teacher.status_code in (302, 307)
+    assert teacher.headers["location"] == "/station.html?mode=teacher"
 
 
 # --------------------------------------------------------------------------- #
@@ -623,15 +638,15 @@ def test_a_late_subscriber_still_sees_the_current_state(client, station):
 # 정적 파일
 # --------------------------------------------------------------------------- #
 
-def test_practice_page_is_served(client):
-    response = client.get("/practice.html")
+def test_the_station_page_is_served(client):
+    response = client.get("/station.html")
     assert response.status_code == 200
     assert "text/html" in response.headers["content-type"]
 
 
 def test_the_page_has_no_build_step_and_no_cdn(client):
     """빌드 도구도 프레임워크도 CDN 도 쓰지 않는다. 단일 파일이다."""
-    body = client.get("/practice.html").text
+    body = client.get("/station.html").text
     assert "<script src=" not in body
     assert "<link rel=\"stylesheet\"" not in body
     for forbidden in ("react", "vue", "jquery", "tailwind", "cdn."):
@@ -647,7 +662,7 @@ def test_the_page_never_reads_an_answer_off_the_prompt(client):
     `outcome.expected` 와 시범 이벤트의 `letters` 는 예외다. 둘 다 문항이
     끝난 뒤에만 나오고, 그때는 정답 공개가 의도다 (기획서 5.2).
     """
-    body = client.get("/practice.html").text
+    body = client.get("/station.html").text
     for forbidden in (
         "prompt.expected",
         "prompt.letters",
@@ -660,11 +675,21 @@ def test_the_page_never_reads_an_answer_off_the_prompt(client):
 
 def test_the_page_shows_tracks_separately(client):
     """요약은 트랙별로만 그린다. 통합 지표를 만들지 않는다."""
-    body = client.get("/practice.html").text
+    body = client.get("/station.html").text
     assert "by_track" in body
-    assert "confusions_by_track" in body
     for forbidden in ("overall", "total_accuracy", "combined"):
         assert forbidden not in body.lower(), forbidden
+
+
+def test_the_session_summary_does_not_draw_confusion_pairs(client):
+    """학습자가 보는 요약에 혼동 쌍을 그리지 않는다 (DECISIONS §52).
+
+    예전에는 요약에 "혼동 쌍 V/W 3회" 가 있었다. 그것을 보고 다음 세션에
+    들어가면 V 가 나올 때마다 W 를 의심하며 본다 — 순수 판별이 아니다.
+    `/end` 응답에는 아직 실려 오지만(교사·MCP 도 쓴다) 화면은 읽지 않는다.
+    """
+    body = client.get("/station.html").text
+    assert "confusions_by_track" not in body
 
 
 # --------------------------------------------------------------------------- #
@@ -823,9 +848,80 @@ def test_mockhand_hides_the_pose_name_by_default(client):
     assert "applyReveal();   // 기본은 숨김" in body
 
 
-def test_practice_does_not_link_to_mockhand(client):
-    """제품 기능이 아니다. 학습자 뷰에 노출하지 않는다 (PRD 6.3)."""
-    assert "mockhand" not in client.get("/practice.html").text
+def _learner_markup(body):
+    """학습자 모드에서 보이는 마크업만 떼어낸다 — 사이드바의 학습자 묶음과
+    학습자 모드 본문. 교사 묶음·교사 모드 본문·스크립트는 들어가지 않는다."""
+    nav_start = body.index('<div class="navGroup" id="learnerNav">')
+    nav_end = body.index('<div class="navGroup" id="teacherNav"', nav_start)
+    mode_start = body.index('<div id="learnerMode">')
+    mode_end = body.index('<div id="teacherMode"', mode_start)
+    return body[nav_start:nav_end] + body[mode_start:mode_end]
+
+
+def _teacher_nav(body):
+    start = body.index('<div class="navGroup" id="teacherNav"')
+    return body[start:body.index('<div class="modeSwitch">', start)]
+
+
+def test_learner_mode_does_not_link_to_mockhand(client):
+    """제품 기능이 아니다. 학습자 모드에 노출하지 않는다 (PRD 6.3).
+
+    한 화면이 된 뒤로 파일 전체에서 이름이 없을 수는 없다 — 교사 모드가
+    새 창으로 띄운다. 그래서 **학습자 모드의 마크업**을 본다 (DECISIONS §52).
+    """
+    body = client.get("/station.html").text
+    assert "mockhand" not in _learner_markup(body)
+
+
+def test_teacher_mode_opens_mockhand_in_its_own_window(client):
+    """통합하지 않고 새 창으로 띄운다. 손을 보면서 화면을 조작하려면 창이
+    따로 있어야 한다. 교사 묶음 안에만 있다."""
+    body = client.get("/station.html").text
+    assert 'id="mockhandBtn"' in _teacher_nav(body)
+    assert "window.open(" in body
+    assert '"/mockhand.html", "mockhand"' in body
+
+
+def test_learner_mode_markup_carries_no_confusion_data(client):
+    """학습자 모드에는 혼동 행렬·약점 쌍으로 가는 길도, 그리는 자리도 없다.
+
+    자기 약점을 알고 문항을 풀면 판별력 측정이 오염된다 (DECISIONS §52).
+    """
+    learner = _learner_markup(client.get("/station.html").text)
+    for forbidden in ("혼동", "약점", "confusion", "weak", "statsView", "planView"):
+        assert forbidden not in learner, forbidden
+
+
+def test_the_page_opens_in_learner_mode(client):
+    """교사 모드는 기본으로 숨는다. 주소가 가리킬 때만 그리로 연다."""
+    body = client.get("/station.html").text
+    assert '<div id="teacherMode" hidden>' in body
+    assert '<div class="navGroup" id="teacherNav" hidden>' in body
+    assert '<div id="learnerMode">' in body
+
+
+def test_the_teacher_door_is_locked_during_a_session(client):
+    """세션을 쥐고 있는 동안은 교사 모드로 못 간다 (DECISIONS §52).
+
+    버튼만 잠그면 버튼을 거치지 않는 길이 남는다. 모드를 바꾸는 함수가
+    직접 막아야 한다.
+    """
+    body = client.get("/station.html").text
+    assert "return state.sessionId !== null;" in body
+    assert 'if (mode === "teacher" && teacherLocked()) { renderNav(); return; }' in body
+
+
+def test_the_mcp_log_is_joined_only_from_teacher_mode(client):
+    """학습자 모드만 쓰는 화면은 진단 채널에 붙지 않는다 (DECISIONS §50, §52).
+
+    로그 소켓을 여는 호출은 `startTeacher()` 안에 하나뿐이다. 끊겼을 때
+    다시 붙는 `setTimeout(openLogSocket, ...)` 은 이미 붙은 뒤의 일이다.
+    """
+    body = client.get("/station.html").text
+    start = body.index("function startTeacher() {")
+    end = body.index("function openMockhand()", start)
+    assert "openLogSocket();" in body[start:end]
+    assert body.count("openLogSocket();") == 1
 
 
 def _block(body, name):
@@ -1113,3 +1209,133 @@ def test_a_request_to_a_reset_session_is_a_structured_409(client, station):
         response = client.post(path)
         assert response.status_code == 409, (path, response.text)
         assert response.json()["code"], path
+
+
+# --------------------------------------------------------------------------- #
+# 학습자 진행 — 혼동 데이터를 싣지 않는다 (DECISIONS §52)
+# --------------------------------------------------------------------------- #
+
+def _answer_wrong_twice(client, station, sid):
+    """같은 문항을 두 번 틀려 혼동 기록을 남긴다. 첫 글자만 다른 글자로 바꾼다."""
+    for _ in range(2):
+        client.get(f"/api/sessions/{sid}/next")
+        client.post(f"/api/sessions/{sid}/present")
+        key = station.controllers[sid]._active_answer()
+        other = next(c for c in sorted(station.config.poses) if c != key[0])
+        client.post(
+            f"/api/sessions/{sid}/answer", json={"answer": other + key[1:]}
+        )
+
+
+def _all_keys(value):
+    if isinstance(value, dict):
+        for key, inner in value.items():
+            yield key
+            yield from _all_keys(inner)
+    elif isinstance(value, list):
+        for inner in value:
+            yield from _all_keys(inner)
+
+
+def _run_session_correctly(client, station):
+    session = start(client)
+    sid = session["session_id"]
+    for _ in range(session["total_items"]):
+        client.get(f"/api/sessions/{sid}/next")
+        client.post(f"/api/sessions/{sid}/present")
+        answer_correctly(client, station, sid)
+    client.post(f"/api/sessions/{sid}/end")
+    return session
+
+
+def test_progress_carries_no_confusion_data(client, station):
+    """혼동 기록이 **있는** 학습자로 확인한다. 기록이 없으면 칸이 빠져 있어도
+    우연일 수 있다.
+
+    필드를 걸러 내는 것이 아니라 처음부터 담지 않는다 — 어떤 깊이에도 혼동
+    쌍·글자·최근 문항이 없어야 한다."""
+    sid = start(client)["session_id"]
+    _answer_wrong_twice(client, station, sid)
+    assert client.get(
+        "/api/stats/confusion", params={"track": TRACK_DISCRIMINATION}
+    ).json()["pairs"], "혼동 기록이 남지 않아 이 테스트가 아무것도 보지 않는다"
+
+    body = client.get("/api/learners/haru/progress").json()
+    keys = set(_all_keys(body))
+    for forbidden in (
+        "confusions", "confusions_by_track", "pairs", "pair", "weakest_pairs",
+        "letters", "recent_items", "expected", "given", "answer",
+        "accuracy_by_hold_ms",
+    ):
+        assert forbidden not in keys, forbidden
+
+
+def test_progress_reports_each_track_separately(client, station):
+    session = _run_session_correctly(client, station)
+
+    body = client.get("/api/learners/haru/progress").json()
+    assert body["sessions"] == 1
+    assert set(body["by_track"]) == {TRACK_DISCRIMINATION, TRACK_WORD}
+    disc = body["by_track"][TRACK_DISCRIMINATION]
+    word = body["by_track"][TRACK_WORD]
+    assert (disc["answered"], word["answered"]) == (2, 1)
+    assert [p["answered"] for p in disc["sessions"]] == [2]
+    assert [p["answered"] for p in word["sessions"]] == [1]
+    assert disc["sessions"][0]["session_id"] == session["session_id"]
+    # 두 트랙을 더한 숫자를 두지 않는다.
+    for forbidden in ("answered", "accuracy", "total_items", "overall"):
+        assert forbidden not in body, forbidden
+
+
+def test_progress_difficulty_is_where_the_next_session_starts(client, station):
+    """화면의 "지금 난이도" 는 세션이 복원하는 값과 **같은 함수**에서 나온다."""
+    from server.session import starting_difficulty
+
+    fresh = client.get("/api/learners/haru/progress").json()
+    for track in (TRACK_DISCRIMINATION, TRACK_WORD):
+        assert fresh["by_track"][track]["difficulty"]["carried_over"] is False
+
+    session = _run_session_correctly(client, station)
+
+    body = client.get("/api/learners/haru/progress").json()
+    with station.database.session() as db:
+        for track in (TRACK_DISCRIMINATION, TRACK_WORD):
+            expected = starting_difficulty(
+                db, station.config, session["learner_id"], track
+            )
+            shown = body["by_track"][track]["difficulty"]
+            assert shown["carried_over"] is True
+            assert (shown["length"], shown["hold_ms"], shown["boundary"]) == (
+                expected.length, expected.hold_ms, expected.boundary
+            )
+
+
+def test_progress_reads_the_unlock_condition_from_config(client, station):
+    """해금 조건은 `poses.json` 에서 온다. 화면은 그 수치를 모른다."""
+    unlock = station.config.curriculum["depth_pairs_unlock"]
+    depth = client.get("/api/learners/haru/progress").json()["depth_pairs"]
+    assert depth["track"] == TRACK_DISCRIMINATION
+    assert depth["window_items"] == unlock["window_items"]
+    assert depth["min_accuracy"] == unlock["min_accuracy"]
+    assert depth["unlocked"] is False
+    assert depth["items_remaining"] == unlock["window_items"]
+
+
+def test_progress_of_an_unknown_name_does_not_count_other_learners(client, station):
+    """기록 없는 이름은 0 이다. **남의 기록이 세지면 안 된다.**
+
+    집계 함수는 `learner_id=None` 을 "범위 없음" 으로 읽는다. 없는 이름을
+    그대로 넘기면 모든 학습자의 문항이 그 이름으로 잡힌다."""
+    _run_session_correctly(client, station)
+
+    response = client.get("/api/learners/nobody/progress")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["learner_id"] is None
+    assert body["sessions"] == 0
+    for track in (TRACK_DISCRIMINATION, TRACK_WORD):
+        assert body["by_track"][track]["answered"] == 0
+        assert body["by_track"][track]["sessions"] == []
+    assert body["depth_pairs"]["answered"] == 0
+    # 조회가 학습자를 만들지 않는다.
+    assert client.get("/api/learners").json()["learners"] == ["haru"]

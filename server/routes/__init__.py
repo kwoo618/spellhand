@@ -459,7 +459,18 @@ def create_app(station: Optional[Station] = None, **kwargs: object) -> FastAPI:
 
     @app.get("/")
     def _index() -> RedirectResponse:
-        return RedirectResponse(url="/practice.html")
+        return RedirectResponse(url="/station.html")
+
+    # 학습자 뷰와 진단 뷰는 한 화면의 두 모드가 됐다 (DECISIONS.md §52).
+    # 예전 주소는 살려 둔다 — PRD 14장·README·시연 대본이 이 주소를 적고
+    # 있고, 발표장에서 북마크가 404 로 떨어지면 안 된다.
+    @app.get("/practice.html")
+    def _practice() -> RedirectResponse:
+        return RedirectResponse(url="/station.html")
+
+    @app.get("/teacher.html")
+    def _teacher() -> RedirectResponse:
+        return RedirectResponse(url="/station.html?mode=teacher")
 
     if WEB_ROOT.is_dir():
         # 정적 파일은 같은 서버가 낸다. 그래서 CORS 설정이 필요 없다.

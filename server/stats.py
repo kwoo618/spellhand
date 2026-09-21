@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Dict, FrozenSet, List, Mapping, Optional, Sequence, Tuple
 
 from sqlalchemy import select
@@ -33,11 +34,15 @@ __all__ = [
     "PairCount",
     "HoldBucket",
     "ItemRecord",
+    "SessionAccuracy",
+    "DepthUnlockProgress",
     "track_summary",
     "accuracy_by_hold_ms",
     "recent_items",
     "confusion_counts",
     "weakest_pairs",
+    "session_accuracy",
+    "depth_unlock_progress",
     "depth_unlocked",
     "recent_letters",
     "item_contains_depth_pair",
@@ -130,6 +135,62 @@ class PairCount:
     pair: Tuple[str, str]
     count: int
     listed: bool
+
+
+@dataclass(frozen=True)
+class SessionAccuracy:
+    """세션 하나에서의 한 트랙 성적. 추이를 그리기 위한 것이다.
+
+    **세션 단위이지 시계열 테이블이 아니다.** `items` 를 세션으로 묶어 세는
+    것뿐이고 따로 쌓아 두는 것이 없다 (DECISIONS.md §40 의 "지금은 시계열이
+    아니다" 와 같은 범위다).
+
+    한 세션이 두 트랙을 모두 담지만 이 값은 **한 트랙만** 센다. 세션이 같아도
+    판별과 단어는 다른 줄이다.
+    """
+
+    session_id: int
+    started_at: Optional[datetime]
+    answered: int
+    correct: int
+
+    @property
+    def accuracy(self) -> Optional[float]:
+        if not self.answered:
+            return None
+        return self.correct / self.answered
+
+
+@dataclass(frozen=True)
+class DepthUnlockProgress:
+    """깊이쌍 해금까지 얼마나 왔는가 (`curriculum.depth_pairs_unlock`).
+
+    `depth_unlocked()` 가 내는 예/아니오와 **같은 계산에서 나온다.** 화면에
+    진척도를 보이려고 판정을 한 벌 더 만들면, 조건을 고칠 때 둘이 어긋나
+    "다 됐다고 나오는데 안 열린다" 가 된다.
+
+    `counted` 는 창에 들어간 문항 수다. 기록이 창보다 적으면 그만큼만 들어간다
+    — 그때 `accuracy` 는 "지금까지의 정확도"이고 해금 판정은 아직 아니다.
+    """
+
+    track: str
+    window_items: int
+    min_accuracy: float
+    answered: int
+    counted: int
+    correct: int
+    unlocked: bool
+
+    @property
+    def accuracy(self) -> Optional[float]:
+        if not self.counted:
+            return None
+        return self.correct / self.counted
+
+    @property
+    def items_remaining(self) -> int:
+        """해금 판정을 받기까지 더 풀어야 하는 문항 수."""
+        return max(0, self.window_items - self.counted)
 
 
 # --------------------------------------------------------------------------- #
@@ -345,6 +406,51 @@ def weakest_pairs(
     return tuple(ranked[:top])
 
 
+def session_accuracy(
+    db: DbSession,
+    track: str,
+    *,
+    learner_id: int,
+    limit: Optional[int] = None,
+) -> Tuple[SessionAccuracy, ...]:
+    """세션별 성적, **오래된 것부터**. 추이를 읽기 위한 것이다.
+
+    다른 집계는 최신순이지만 이것만 반대다 — 왼쪽에서 오른쪽으로 읽는 추이에서
+    최신순은 거꾸로 간다. `limit` 은 **최근** 몇 세션인지이고, 자른 뒤에 다시
+    오래된 순으로 세운다.
+
+    `track` 은 필수다. 한 세션이 두 트랙을 모두 담지만 줄은 트랙마다 따로다.
+    """
+    _require_track(track)
+
+    tally: Dict[int, List[Item]] = {}
+    for item in _answered_items(db, track, learner_id=learner_id):
+        tally.setdefault(item.session_id, []).append(item)
+
+    ordered = sorted(tally)
+    if limit is not None:
+        ordered = ordered[-limit:]
+
+    started = {
+        row.id: row.started_at
+        for row in db.scalars(
+            select(TrainingSession).where(TrainingSession.id.in_(ordered))
+        )
+    } if ordered else {}
+
+    return tuple(
+        SessionAccuracy(
+            session_id=session_id,
+            started_at=started.get(session_id),
+            answered=len(tally[session_id]),
+            correct=sum(
+                1 for i in tally[session_id] if i.result == RESULT_CORRECT
+            ),
+        )
+        for session_id in ordered
+    )
+
+
 # --------------------------------------------------------------------------- #
 # 깊이쌍 게이팅
 # --------------------------------------------------------------------------- #
@@ -364,19 +470,24 @@ def item_contains_depth_pair(config: Config, letters: str) -> bool:
     return any(key <= present for key in depth_pair_keys(config))
 
 
-def depth_unlocked(
-    db: DbSession, config: Config, track: str, *, learner_id: int
-) -> bool:
-    """깊이쌍을 출제해도 되는가 (`curriculum.depth_pairs_unlock`).
+def depth_unlock_progress(
+    db: DbSession, config: Config, track: str, *, learner_id: Optional[int]
+) -> DepthUnlockProgress:
+    """해금 판정과 **거기까지의 진척도**를 한 번에 낸다.
 
     학습자의 최근 `window_items` 문항(깊이쌍 포함 문항은 제외) 정확도가
     `min_accuracy` 이상이면 해금이다. 임계값은 전부 설정에서 읽는다.
 
     기록이 `window_items` 에 못 미치면 **잠금**이다. 근거가 부족한 상태에서
-    가장 어려운 쌍을 내보내지 않는다.
+    가장 어려운 쌍을 내보내지 않는다. 그래도 지금까지의 정확도는 함께 낸다 —
+    학습자 화면이 "몇 문항 남았고 지금 몇 퍼센트인가" 를 보여야 한다.
 
     `track` 이 필수인 이유: 두 트랙의 정확도를 섞으면 단어 트랙의 성적이 판별
     트랙의 해금 결정을 좌우한다. 그것은 트랙 분리 원칙 위반이다.
+
+    `learner_id` 가 `None` 이면 아직 기록이 없는 학습자다. **아무것도 세지
+    않는다** — `_answered_items()` 에 `None` 을 넘기면 범위를 좁히지 않아
+    모든 학습자의 문항을 센다. 남의 기록으로 해금되는 일을 여기서 막는다.
     """
     _require_track(track)
     unlock = config.curriculum.get("depth_pairs_unlock")
@@ -390,15 +501,42 @@ def depth_unlocked(
 
     candidates = [
         item
-        for item in _answered_items(db, track, learner_id=learner_id)
+        for item in (
+            _answered_items(db, track, learner_id=learner_id)
+            if learner_id is not None
+            else []
+        )
         if not item_contains_depth_pair(config, item.letters)
     ]
-    if len(candidates) < window:
-        return False
-
     recent = candidates[:window]
-    accuracy = sum(1 for i in recent if i.result == RESULT_CORRECT) / len(recent)
-    return accuracy >= threshold
+    correct = sum(1 for i in recent if i.result == RESULT_CORRECT)
+    # 창이 다 차야 판정한다. 부분 정확도로 열지 않는다.
+    unlocked = len(candidates) >= window and bool(
+        recent and correct / len(recent) >= threshold
+    )
+
+    return DepthUnlockProgress(
+        track=track,
+        window_items=window,
+        min_accuracy=threshold,
+        answered=len(candidates),
+        counted=len(recent),
+        correct=correct,
+        unlocked=unlocked,
+    )
+
+
+def depth_unlocked(
+    db: DbSession, config: Config, track: str, *, learner_id: int
+) -> bool:
+    """깊이쌍을 출제해도 되는가 (`curriculum.depth_pairs_unlock`).
+
+    **판정은 `depth_unlock_progress()` 한 곳에서만 한다.** 화면이 진척도를
+    보이려고 같은 조건을 한 벌 더 쓰면, 조건을 고칠 때 둘이 어긋난다.
+    """
+    return depth_unlock_progress(
+        db, config, track, learner_id=learner_id
+    ).unlocked
 
 
 # --------------------------------------------------------------------------- #
