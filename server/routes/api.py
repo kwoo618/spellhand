@@ -237,9 +237,16 @@ def open_session(request: Request) -> Dict[str, Any]:
     if controller is None or controller.finished:
         # 락이 비었거나, 쥔 세션이 이 서버의 것이 아니거나, 이미 끝났다.
         # 셋 다 "참여할 세션이 없다" 다 — 화면은 이름 입력으로 간다.
-        return {"session_id": None}
+        #
+        # `lock_holder` 는 그래도 낸다. **"참여할 세션이 없다" 와 "손이 비어
+        # 있다" 는 다른 사실이다** — 남이 쥐고 있을 수도, 이 서버가 모르는
+        # 세션일 수도 있다. 화면은 이 칸으로 강제 해제를 내놓을지 정한다.
+        # 잡힌 것이 없는데 해제를 권하면, 시킨 대로 눌러도 "잠긴 세션이
+        # 없습니다" 가 돌아와 사용자가 자기 잘못을 의심하게 된다 (§51).
+        return {"session_id": None, "lock_holder": holder}
 
     payload: Dict[str, Any] = {
+        "lock_holder": holder,
         "session_id": controller.session_id,
         "learner_id": controller.learner_id,
         "learner_name": _learner_name(station, controller.learner_id),

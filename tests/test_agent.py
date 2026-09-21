@@ -1291,7 +1291,11 @@ def test_a_session_made_by_hand_is_joinable_but_not_planned(http, station):
 def test_there_is_nothing_to_join_before_an_approval(http, station):
     """계획을 만들기만 해서는 참여할 세션이 없다 (PRD 13.3)."""
     make_plan(http)
-    assert http.get("/api/sessions/open").json() == {"session_id": None}
+    # 참여할 세션도, 잡힌 락도 없다. 계획은 둘 중 아무것도 만들지 않는다.
+    assert http.get("/api/sessions/open").json() == {
+        "session_id": None,
+        "lock_holder": None,
+    }
     assert station.lock.holder() is None
 # --------------------------------------------------------------------------- #
 # 동기 구동 경로의 정지 (DECISIONS §50.3) — 이 테스트는 완화하지 않는다

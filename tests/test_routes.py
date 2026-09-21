@@ -1017,7 +1017,10 @@ def test_a_device_failure_says_the_session_is_gone(config, clock):
 # --------------------------------------------------------------------------- #
 
 def test_nothing_is_open_before_a_session_starts(client):
-    assert client.get("/api/sessions/open").json() == {"session_id": None}
+    assert client.get("/api/sessions/open").json() == {
+        "session_id": None,
+        "lock_holder": None,
+    }
 
 
 def test_an_open_session_is_reported_without_touching_the_lock(client, station):
@@ -1038,7 +1041,11 @@ def test_a_finished_session_is_not_open(client, station):
     session = start(client)
     sid = session["session_id"]
     client.post(f"/api/sessions/{sid}/end")
-    assert client.get("/api/sessions/open").json() == {"session_id": None}
+    # 끝난 세션은 참여 대상이 아니고, 락도 반납되어 있다.
+    assert client.get("/api/sessions/open").json() == {
+        "session_id": None,
+        "lock_holder": None,
+    }
 
 
 def test_a_session_this_server_does_not_know_is_not_open(client, station):
@@ -1046,4 +1053,63 @@ def test_a_session_this_server_does_not_know_is_not_open(client, station):
     session = start(client)
     sid = session["session_id"]
     station.controllers.pop(sid)
-    assert client.get("/api/sessions/open").json() == {"session_id": None}
+    # 참여는 못 한다. 락 상태는 따로 낸다 (아래 §51 테스트가 그것을 본다).
+    assert client.get("/api/sessions/open").json()["session_id"] is None
+# --------------------------------------------------------------------------- #
+# 참여 조회는 락 상태도 낸다 (DECISIONS §51)
+# --------------------------------------------------------------------------- #
+
+def test_the_open_query_reports_the_lock_holder_separately(client, station):
+    """"참여할 세션이 있다" 와 "손이 잡혀 있다" 는 다른 사실이다.
+
+    화면은 `lock_holder` 로 강제 해제를 내놓을지 정한다. 잡힌 것이 없는데
+    권하면 시킨 대로 눌러도 "잠긴 세션이 없습니다" 가 돌아온다.
+    """
+    # 아무것도 없을 때: 둘 다 비어 있다.
+    body = client.get("/api/sessions/open").json()
+    assert body == {"session_id": None, "lock_holder": None}
+
+    session = start(client)
+    sid = session["session_id"]
+    body = client.get("/api/sessions/open").json()
+    assert body["session_id"] == sid
+    assert body["lock_holder"] == sid
+
+
+def test_a_held_lock_is_reported_even_with_no_session_to_join(client, station):
+    """이 서버가 모르는 세션이 락을 쥔 경우. 참여는 못 하지만 해제는 할 수 있다."""
+    session = start(client)
+    sid = session["session_id"]
+    # 컨트롤러만 사라진 상태 — 락은 남아 있다.
+    station.controllers.pop(sid)
+
+    body = client.get("/api/sessions/open").json()
+    assert body["session_id"] is None, "참여할 세션은 없다"
+    assert body["lock_holder"] == sid, "그래도 손은 잡혀 있다"
+
+
+def test_the_lock_is_free_after_a_reset(client, station):
+    """해제 뒤에는 참여할 세션도, 잡힌 락도 없다."""
+    start(client)
+    client.post("/api/device/reset")
+    assert client.get("/api/sessions/open").json() == {
+        "session_id": None,
+        "lock_holder": None,
+    }
+
+
+def test_a_request_to_a_reset_session_is_a_structured_409(client, station):
+    """죽은 세션에 보낸 요청은 구조화된 409 다. 화면이 이것으로 세션을 버린다.
+
+    실기 로그에서 같은 요청이 네 번 반복됐다 (§51). 몸통이 읽히지 않으면
+    화면은 반복을 멈출 근거를 갖지 못한다.
+    """
+    session = start(client)
+    sid = session["session_id"]
+    client.get(f"/api/sessions/{sid}/next")
+    client.post("/api/device/reset")
+
+    for path in (f"/api/sessions/{sid}/planned", f"/api/sessions/{sid}/heartbeat"):
+        response = client.post(path)
+        assert response.status_code == 409, (path, response.text)
+        assert response.json()["code"], path

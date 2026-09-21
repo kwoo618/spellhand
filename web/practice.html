@@ -134,10 +134,16 @@
       <p class="note" id="joinNote"></p>
       <div class="row">
         <button class="primary" id="joinBtn">시작</button>
+        <!-- 참여하지 않고 빠져나가는 길. 세션은 살려 둔다 -->
+        <button id="laterBtn" type="button">나중에</button>
       </div>
     </div>
 
     <div id="newBox">
+    <!-- [나중에] 로 빠져나온 뒤 돌아오는 길. 그 세션이 살아 있을 때만 나온다 -->
+    <div class="row" id="rejoinRow" hidden>
+      <button id="rejoinBtn" type="button"></button>
+    </div>
     <label for="name">이름</label>
     <input type="text" id="name" autocomplete="off" style="letter-spacing:normal;text-transform:none">
     <div class="row">
@@ -183,7 +189,9 @@
 
   <p class="error" id="error"></p>
 
-  <div class="recovery">
+  <!-- 락이 실제로 잡혀 있을 때만 보인다. 잡힌 것이 없는데 권하면 시킨 대로
+       눌러도 "잠긴 세션이 없습니다" 가 돌아온다 (§51) -->
+  <div class="recovery" id="recoveryRow" hidden>
     <button id="resetBtn" type="button">세션 끝내고 손 놓기</button>
     <span class="note" id="resetNote"></span>
   </div>
@@ -213,6 +221,8 @@ const state = {
   planned: false,
   // 지금 문항이 손까지 도착했는가. 정지로 중간에 끊기면 false 로 남는다.
   landed: false,
+  // [나중에] 로 접어 둔 세션 id. 그 세션에 대해서만 참여 자리를 숨긴다.
+  declined: null,
 };
 
 function show(id, visible) { el(id).hidden = !visible; }
@@ -242,9 +252,11 @@ const REJECTION_TEXT = {
   LOCK_UNAVAILABLE: () =>
     "다른 사람이 로봇손을 쓰고 있습니다. " +
     "화면 아래 [세션 끝내고 손 놓기] 를 누른 뒤 다시 시작하세요.",
-  LOCK_NOT_HELD: () =>
-    "이 세션은 로봇손을 놓았습니다. " +
-    "화면 아래 [세션 끝내고 손 놓기] 를 누른 뒤 처음부터 다시 시작하세요.",
+  // **강제 해제를 시키지 않는다.** 이 코드가 왔다는 것은 이 세션이 락을
+  // 놓았다는 뜻이고, 그 상태에서 해제를 누르면 "잠긴 세션이 없습니다" 가
+  // 돌아온다 — 시킨 대로 했는데 없다는 답이 나온다 (§51). 다음에 무엇을
+  // 하면 되는지는 `abandonSession()` 이 시작 화면에 적는다.
+  LOCK_NOT_HELD: () => "이 세션은 로봇손을 놓았습니다.",
   CURRICULUM_VIOLATION: () =>
     "아직 나올 차례가 아닌 글자 조합입니다. 앞 단계를 마치면 나옵니다.",
   RATE_LIMIT: () => "너무 빨리 눌렀습니다. 잠시 뒤에 다시 눌러 주세요.",
@@ -309,7 +321,21 @@ async function call(method, path, body) {
       payload = {};
     }
   }
-  if (!response.ok) throw rejection(payload, response);
+  if (!response.ok) {
+    const error = rejection(payload, response);
+    // 내 세션에 보낸 요청이 409 로 막혔다. 세션이 죽었을 수 있으므로 확인을
+    // 건다 — **기다리지 않는다.** 거부는 호출자가 지금 처리해야 하고, 확인은
+    // 그와 별개로 끝난 뒤 화면을 정리한다 (§51).
+    // `SESSION_FINISHED` 는 제외한다. 계획된 문항을 다 낸 것이고 **정상
+    // 종료**다. 이것으로 확인을 걸면 요약을 보여주는 사이에 세션이 사라진
+    // 것을 보고 시작 화면으로 돌려 버린다 — 학습자가 요약을 못 본다.
+    if (state.sessionId !== null && response.status === 409 &&
+        error.code !== "SESSION_FINISHED" &&
+        path.startsWith(`/api/sessions/${state.sessionId}/`)) {
+      confirmSessionAlive(error.code);
+    }
+    throw error;
+  }
   return payload;
 }
 
@@ -425,19 +451,143 @@ function stopOpenPoll() {
   if (openPoll) { clearInterval(openPoll); openPoll = null; }
 }
 
+function startOpenPoll() {
+  if (!openPoll) { openPoll = setInterval(checkOpenSession, OPEN_POLL_MS); }
+}
+
+/**
+ * 강제 해제를 내놓을지 정한다.
+ *
+ * **락이 실제로 잡혀 있을 때만이다.** 잡힌 것이 없는데 권하면, 시킨 대로
+ * 눌러도 "잠긴 세션이 없습니다" 가 돌아온다. 사용자는 자기가 무엇을 잘못
+ * 했는지 알 수 없다 (§51).
+ */
+function renderRecovery(lockHeld) {
+  show("recoveryRow", Boolean(lockHeld));
+  if (!lockHeld) { disarmReset(); el("resetNote").textContent = ""; }
+}
+
 /** 열린 세션이 있으면 참여 자리를, 없으면 이름 입력을 보인다. */
 function renderOpenSession(open) {
   const joinable = Boolean(open && open.session_id);
   state.open = joinable ? open : null;
-  show("joinBox", joinable);
-  show("newBox", !joinable);
+  // 손이 잡혀 있는지는 참여할 세션이 있는지와 **다른 사실**이다.
+  renderRecovery(open && open.lock_holder !== null &&
+                 open.lock_holder !== undefined);
+
+  // 접어 둔 세션이 사라졌으면 접어 둔 사실도 버린다.
+  if (state.declined !== null &&
+      (!joinable || state.declined !== open.session_id)) {
+    state.declined = null;
+  }
+  const declined = joinable && state.declined === open.session_id;
+
+  show("joinBox", joinable && !declined);
+  show("newBox", !joinable || declined);
+  show("rejoinRow", declined);
+
   if (!joinable) { el("joinNote").textContent = ""; return; }
 
   // 몇 문항짜리인지까지 적는다. 선생님이 승인한 그 세션인지 학습자가
   // 확인할 수 있어야 한다.
   const who = open.learner_name ? `${open.learner_name} · ` : "";
-  el("joinNote").textContent =
+  const label =
     `세션 ${open.session_id} 이 준비되어 있습니다 — ${who}${open.total_items}문항`;
+  el("joinNote").textContent = label;
+  el("rejoinBtn").textContent = `세션 ${open.session_id} 으로 참여하기`;
+}
+
+/**
+ * 참여하지 않고 빠져나간다. **세션은 살려 둔다.**
+ *
+ * 지금까지는 이 화면에서 벗어나는 길이 강제 해제뿐이었고, 그것은 세션을
+ * 죽인다 — 다른 사람이 쓰려던 세션을 끊게 된다 (§51). 접는 것은 이 화면에
+ * 대해서만이고, 폴링은 계속 돌아 돌아올 길이 남는다.
+ */
+function declineJoin() {
+  if (!state.open) return;
+  state.declined = state.open.session_id;
+  renderOpenSession(state.open);
+  el("startNote").textContent =
+    `세션 ${state.declined} 은 그대로 있습니다. 위 버튼으로 돌아갈 수 있습니다.`;
+  el("name").focus();
+}
+
+function undeclineJoin() {
+  state.declined = null;
+  el("startNote").textContent = "";
+  renderOpenSession(state.open);
+}
+
+/**
+ * 이 세션은 더 못 쓴다. **한 곳에서만 버린다.**
+ *
+ * 화면이 죽은 `session_id` 를 계속 들고 있으면 heartbeat 와 구동 요청이
+ * 409 를 반복한다. 실기 로그에 네 번 찍혔다 (§51). 버릴 때 같이 해야 하는
+ * 일이 네 가지라, 흩어 놓으면 하나씩 빠진다.
+ *
+ * `message` 는 시작 화면에 남긴다 — 학습자가 왜 처음으로 돌아왔는지 알아야
+ * 한다. 오류 자리에 쓰지 않는다. 오류는 이미 지나간 것이고, 지금 필요한 것은
+ * 다음에 무엇을 하면 되는가다.
+ */
+function abandonSession(message) {
+  // heartbeat 는 `state.sessionId` 를 보고 돈다. 비우는 것으로 멈춘다.
+  state.sessionId = null;
+  state.prompt = null;
+  state.planned = false;
+  state.landed = false;
+  state.declined = null;
+  if (state.socket) { state.socket.close(); state.socket = null; }
+
+  setError("");
+  setMoving(false);
+  el("dot").classList.remove("live");
+  el("counter").textContent = "";
+  el("learner").textContent = "—";
+  show("result", false);
+  show("trainPanel", false);
+  show("summaryPanel", false);
+  show("startPanel", true);
+  el("startNote").textContent = message || "";
+
+  // 참여할 세션이 또 있을 수 있다. 조회를 되살리고 곧바로 한 번 묻는다.
+  startOpenPoll();
+  checkOpenSession();
+}
+
+/**
+ * 세션 요청이 거부됐다. 그 세션이 아직 살아 있는지 **서버에 물어서** 정한다.
+ *
+ * 409 를 전부 "죽었다" 로 읽으면 안 된다 — `DEVICE_BUSY` 도 409 인데 그것은
+ * 정지 직후의 겹친 구동이고 세션은 멀쩡하다 (§50.4). 그렇다고 코드 목록으로
+ * 가르면 코드를 하나 더할 때마다 어긋난다. 참여 조회에 한 번 물어본다.
+ *
+ * **재시도가 아니다.** 실패한 요청을 다시 보내는 것이 아니고, 세션이 아직
+ * 있는지만 확인한다. 확인은 요청 하나이고 결과는 둘 중 하나다.
+ */
+let confirming = false;
+
+async function confirmSessionAlive(deadCode) {
+  if (confirming || state.sessionId === null) return;
+  confirming = true;
+  const mine = state.sessionId;
+  try {
+    const open = await call("GET", "/api/sessions/open");
+    if (state.sessionId !== mine) return;      // 그사이 바뀌었다
+    if (open.session_id === mine) return;      // 살아 있다. 그냥 거부였다
+    renderRecovery(open.lock_holder !== null && open.lock_holder !== undefined);
+    abandonSession(
+      `세션 ${mine} 이 끝났습니다. ` +
+      (deadCode === "LOCK_NOT_HELD" ? "로봇손을 다른 곳에서 가져갔습니다. " : "") +
+      "처음부터 다시 시작하세요."
+    );
+  } catch (err) {
+    // 확인조차 실패했다. 여기서 세션을 버리지 않는다 — 서버가 잠깐 답하지
+    // 않은 것일 수 있고, 멀쩡한 세션을 끊으면 진행 중인 문항이 날아간다.
+    console.warn("could not confirm whether the session is alive", err);
+  } finally {
+    confirming = false;
+  }
 }
 
 async function checkOpenSession() {
@@ -468,6 +618,9 @@ async function joinSession() {
   state.sessionId = open.session_id;
   state.total = open.total_items;
   state.planned = Boolean(open.planned);
+  state.declined = null;
+  el("startNote").textContent = "";
+  renderRecovery(true);
   el("learner").textContent = open.learner_name || "—";
   show("startPanel", false);
   show("trainPanel", true);
@@ -494,6 +647,9 @@ async function startSession() {
     stopOpenPoll();
     state.sessionId = session.session_id;
     state.total = session.total_items;
+    state.declined = null;
+    el("startNote").textContent = "";
+    renderRecovery(true);
     el("learner").textContent = name;
     show("startPanel", false);
     show("trainPanel", true);
@@ -673,7 +829,14 @@ async function endSession() {
     setError(err.message);
     return;
   }
-  if (state.socket) state.socket.close();
+  // 세션은 끝났고 락도 반납됐다. `session_id` 를 들고 있으면 heartbeat 가
+  // 죽은 세션으로 계속 나간다 (§51). 요약은 그대로 둔다 — 시작 화면으로
+  // 돌리지 않는다.
+  state.sessionId = null;
+  state.planned = false;
+  state.prompt = null;
+  renderRecovery(false);
+  if (state.socket) { state.socket.close(); state.socket = null; }
   show("trainPanel", false);
   show("summaryPanel", true);
   el("counter").textContent = "";
@@ -736,19 +899,17 @@ async function resetDevice() {
   setError("");
   try {
     const result = await call("POST", "/api/device/reset");
-    state.sessionId = null;
-    if (state.socket) { state.socket.close(); state.socket = null; }
     disarmReset();
-    // 무엇을 끝냈는지 그대로 쓴다. 끝낸 것이 없으면 없다고 쓴다.
-    el("resetNote").textContent =
-      result.ended_sessions.length
-        ? `세션 ${result.ended_sessions.join(", ")} 을 종료하고 손을 놓았습니다.`
-        : "잠긴 세션이 없습니다. 손을 안전 자세로 되돌렸습니다.";
-    setMoving(false);
-    el("dot").classList.remove("live");
-    show("trainPanel", false);
-    show("summaryPanel", false);
-    show("startPanel", true);
+    // 무엇을 끝냈는지 그대로 쓴다. 끝낸 것이 없으면 없다고 쓴다. 이 문구는
+    // 시작 화면에 남는다 — 해제 뒤에는 해제 버튼 자체가 사라지기 때문이다.
+    const said = result.ended_sessions.length
+      ? `세션 ${result.ended_sessions.join(", ")} 을 종료하고 손을 놓았습니다.`
+      : "잠긴 세션이 없습니다. 손을 안전 자세로 되돌렸습니다.";
+    // 들고 있던 session_id 를 **여기서 버린다.** 남겨 두면 heartbeat 와 구동
+    // 요청이 죽은 세션으로 계속 나간다 (§51).
+    abandonSession(said);
+    // 해제한 뒤에는 잡힌 것이 없다. `lock_holder` 를 다시 볼 때까지 숨긴다.
+    renderRecovery(false);
   } catch (err) {
     disarmReset();
     el("resetNote").textContent = "";
@@ -771,12 +932,18 @@ el("nextBtn").addEventListener("click", () => {
 });
 el("againBtn").addEventListener("click", () => location.reload());
 el("joinBtn").addEventListener("click", joinSession);
+el("laterBtn").addEventListener("click", declineJoin);
+el("rejoinBtn").addEventListener("click", undeclineJoin);
 
 // 기동할 때 한 번 묻고, 시작 화면에 머무는 동안만 되묻는다.
 checkOpenSession();
-openPoll = setInterval(checkOpenSession, OPEN_POLL_MS);
+startOpenPoll();
 
 // 락 heartbeat. 세션이 살아 있음을 서버에 알린다 (PRD 10장: 15초 주기).
+//
+// 조용히 삼키는 것은 **여기서 처리하지 않기 때문**이다. 409 가 오면 `call()`
+// 이 확인을 걸고, 세션이 죽었으면 `abandonSession()` 이 `state.sessionId` 를
+// 비운다. 그러면 이 타이머는 다음 틱부터 아무것도 보내지 않는다 (§51).
 setInterval(() => {
   if (state.sessionId) {
     call("POST", `/api/sessions/${state.sessionId}/heartbeat`).catch(() => {});
