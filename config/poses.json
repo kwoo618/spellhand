@@ -37,6 +37,8 @@
     "observe_from": "arrival",
     "settle_ms": 0,
     "idle_timeout_ms": 30000,
+    "approach_transition_ms": 300,
+    "approach_hold_ms": 200,
     "_note": "transition/hold는 실측. hold_min 2000의 성격은 2026-09-08 확인 결과 정착 시간도 부하 한계도 아니었다 — 하한 자체가 불필요했고 800ms까지 안정 동작을 확인해 하한을 내렸다. 정착 시간 가설이 기각되었으므로 observe_from은 arrival, settle_ms는 0을 유지한다"
   },
 
@@ -50,7 +52,7 @@
     "I": { "thumb": 0.70, "index": 0.83, "middle": 0.80, "ring": 0.76, "pinky": 0.00 },
     "Y": { "thumb": 0.00, "index": 1.00, "middle": 1.00, "ring": 1.00, "pinky": 0.00 },
     "O": { "thumb": 0.70, "index": 0.83, "middle": 0.80, "ring": 0.76, "pinky": 0.70 },
-    "E": { "thumb": 0.90, "index": 0.50, "middle": 0.48, "ring": 0.57, "pinky": 0.40 },
+    "E": { "thumb": 0.90, "index": 0.50, "middle": 0.48, "ring": 0.57, "pinky": 0.40, "approach": "S" },
     "S": { "thumb": 0.70, "index": 1.00, "middle": 1.00, "ring": 1.00, "pinky": 1.00 }
   },
 

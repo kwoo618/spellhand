@@ -466,3 +466,139 @@ def test_an_inverted_board_pin_range_is_rejected(broken):
     with pytest.raises(ConfigError) as exc:
         load_config(broken(mutate))
     assert "$.pins.board_pin_range.min" in str(exc.value)
+
+
+# --------------------------------------------------------------------------- #
+# 경유 자세 (approach, DECISIONS.md §55)
+# --------------------------------------------------------------------------- #
+
+def test_approach_is_read_apart_from_finger_flex(config, raw):
+    declared = {
+        letter: pose["approach"]
+        for letter, pose in raw["poses"].items()
+        if "approach" in pose
+    }
+    assert dict(config.approaches) == declared
+    for letter in declared:
+        # 자세 dict 는 손가락 flex 뿐이다. approach 가 섞여 내려가지 않는다.
+        assert set(config.poses[letter]) == set(config.fingers)
+    for letter in config.poses:
+        assert config.approach_of(letter) == declared.get(letter)
+
+
+def test_config_without_any_approach_loads(broken):
+    def mutate(data):
+        for pose in data["poses"].values():
+            pose.pop("approach", None)
+
+    config = load_config(broken(mutate))
+    assert dict(config.approaches) == {}
+    assert all(config.approach_of(letter) is None for letter in config.poses)
+
+
+def test_approach_to_unknown_letter_is_rejected(broken):
+    def mutate(data):
+        data["poses"]["B"]["approach"] = "Q"
+
+    with pytest.raises(ConfigError) as exc:
+        load_config(broken(mutate))
+    assert "$.poses.B.approach" in str(exc.value)
+    assert "'Q'" in str(exc.value)
+
+
+def test_approach_to_itself_is_rejected(broken):
+    def mutate(data):
+        data["poses"]["B"]["approach"] = "B"
+
+    with pytest.raises(ConfigError) as exc:
+        load_config(broken(mutate))
+    assert "$.poses.B.approach" in str(exc.value)
+    assert "itself" in str(exc.value)
+
+
+def test_approach_cycle_is_rejected(broken):
+    def mutate(data):
+        data["poses"]["B"]["approach"] = "W"
+        data["poses"]["W"]["approach"] = "B"
+
+    with pytest.raises(ConfigError) as exc:
+        load_config(broken(mutate))
+    assert "cycle" in str(exc.value)
+
+
+def test_approach_chain_is_rejected(broken):
+    # 경유는 한 단계다. 경유 자세가 또 경유하면 세션이 따라갈지 정해진 바가 없다.
+    def mutate(data):
+        data["poses"]["B"]["approach"] = "W"
+        data["poses"]["W"]["approach"] = "V"
+
+    with pytest.raises(ConfigError) as exc:
+        load_config(broken(mutate))
+    assert "$.poses.B.approach" in str(exc.value)
+    assert "single step" in str(exc.value)
+
+
+def test_non_string_approach_is_rejected(broken):
+    def mutate(data):
+        data["poses"]["B"]["approach"] = 1
+
+    with pytest.raises(ConfigError) as exc:
+        load_config(broken(mutate))
+    assert "$.poses.B.approach" in str(exc.value)
+
+
+@pytest.mark.parametrize("block", ["neutral", "safe"])
+def test_approach_is_not_allowed_on_neutral_or_safe(broken, block):
+    def mutate(data):
+        data[block]["approach"] = "S"
+
+    with pytest.raises(ConfigError) as exc:
+        load_config(broken(mutate))
+    assert f"$.{block}" in str(exc.value)
+
+
+@pytest.mark.parametrize("name", ["approach_transition_ms", "approach_hold_ms"])
+def test_approach_timing_is_required(broken, name):
+    def mutate(data):
+        del data["timing"][name]
+
+    with pytest.raises(ConfigError) as exc:
+        load_config(broken(mutate))
+    assert f"$.timing.{name}" in str(exc.value)
+
+
+@pytest.mark.parametrize("offset", [0, 1])
+def test_approach_not_faster_than_transition_is_rejected(broken, offset):
+    # 같아도 거부한다. 경유가 본 전이만큼 걸리면 경유 글자만 눈에 띄게 늦다.
+    def mutate(data):
+        data["timing"]["approach_transition_ms"] = (
+            data["timing"]["transition_ms"] + offset
+        )
+
+    with pytest.raises(ConfigError) as exc:
+        load_config(broken(mutate))
+    assert "approach_transition_ms" in str(exc.value)
+
+
+def test_approach_hold_beyond_firmware_limit_is_rejected(broken):
+    def mutate(data):
+        data["timing"]["approach_hold_ms"] = data["timing"]["hold_max_ms"] + 1
+
+    with pytest.raises(ConfigError) as exc:
+        load_config(broken(mutate))
+    assert "approach_hold_ms" in str(exc.value)
+
+
+def test_approach_keys_do_not_change_calibration_hash(raw, broken):
+    # 경유는 서버만 안다. 펌웨어 재업로드를 요구하지 않는다.
+    from server.calibration import calibration_hash
+
+    def strip(data):
+        for pose in data["poses"].values():
+            pose.pop("approach", None)
+        data["timing"]["approach_transition_ms"] = 1
+        data["timing"]["approach_hold_ms"] = 0
+
+    assert calibration_hash(load_config(broken(strip))) == calibration_hash(
+        load_config(REAL_CONFIG)
+    )

@@ -169,6 +169,10 @@ class Timing:
     observe_from: str
     settle_ms: int
     idle_timeout_ms: int
+    # 경유 자세(`$.poses.<글자>.approach`) 전용. 사람에게 보여 주는 자세가 아니라
+    # 텐던을 당기는 동작이라 기본 전이보다 빨리 지나간다 (DECISIONS.md §55).
+    approach_transition_ms: int
+    approach_hold_ms: int
 
 
 @dataclass(frozen=True)
@@ -199,6 +203,8 @@ class Config:
     pins: Mapping[str, int]
     timing: Timing
     poses: Mapping[str, Pose]
+    # 글자 -> 그 글자로 가기 전에 거치는 글자. 경유가 없는 글자는 키가 없다.
+    approaches: Mapping[str, str]
     neutral: Pose
     safe: Pose
     validation: Validation
@@ -216,6 +222,10 @@ class Config:
             for finger in self.fingers
             if abs(a[finger] - b[finger]) >= threshold - _DELTA_EPSILON
         )
+
+    def approach_of(self, letter: str) -> "str | None":
+        """이 글자로 가기 전에 거치는 글자. 경유가 없으면 None."""
+        return self.approaches.get(letter)
 
     def depth_pairs(self) -> Tuple[ConfusionPair, ...]:
         """굽힘 깊이로만 갈리는 혼동쌍 (커리큘럼에서 늦게 푸는 쌍)."""
@@ -265,6 +275,54 @@ def _parse_pose(raw: Any, path: str, fingers: Tuple[str, ...]) -> Pose:
             )
         pose[finger] = flex
     return pose
+
+
+def _parse_letter_pose(
+    raw: Any, path: str, fingers: Tuple[str, ...]
+) -> Tuple[Pose, "str | None"]:
+    """글자 자세 하나. 손가락 flex 와 선택 필드 `approach` 를 나눠 돌려준다.
+
+    `approach` 는 글자 자세에만 허용한다. 중립·안전은 `_parse_pose` 로 읽으므로
+    거기 적으면 손가락이 아닌 키로 거부된다.
+    """
+    node = dict(_require_mapping(raw, path))
+    approach = None
+    if "approach" in node:
+        approach = _require_nonempty_str(node.pop("approach"), f"{path}.approach")
+    return _parse_pose(node, path, fingers), approach
+
+
+def _check_approaches(approaches: Mapping[str, str], poses: Mapping[str, Pose]) -> None:
+    """경유 관계 검증. 경유는 한 단계뿐이다 — 경유 자세 자신은 경유하지 않는다.
+
+    세션은 경유 자세로 한 번 갔다가 목표로 간다. 경유 자세에 또 경유가 적혀
+    있으면 그것을 따라갈지 무시할지 정해진 바가 없으므로 거부한다. 순환
+    (A->B, B->A) 도 이 규칙에 걸리지만, 원인을 알아보기 쉽게 따로 말한다.
+    """
+    for letter in sorted(approaches):
+        target = approaches[letter]
+        path = f"$.poses.{letter}.approach"
+        if target not in poses:
+            raise _fail(path, target, f"a letter present in $.poses {sorted(poses)}")
+        if target == letter:
+            raise _fail(
+                path, target, "a different letter (a pose cannot approach itself)"
+            )
+        if target in approaches:
+            if approaches[target] == letter:
+                raise _fail(
+                    path,
+                    target,
+                    f"a letter that does not approach back to {letter!r} "
+                    f"($.poses.{target}.approach is {letter!r}, a cycle)",
+                )
+            raise _fail(
+                path,
+                target,
+                f"a letter without its own approach "
+                f"($.poses.{target}.approach is {approaches[target]!r}; "
+                f"approach is a single step)",
+            )
 
 
 def _parse_servo_range(node: Mapping[str, Any]) -> ServoRange:
@@ -389,6 +447,8 @@ def _parse_timing(raw: Mapping[str, Any]) -> Timing:
         "interpolation_tick_ms",
         "settle_ms",
         "idle_timeout_ms",
+        "approach_transition_ms",
+        "approach_hold_ms",
     ):
         values[name] = _require_int(
             _require_key(node, name, "$.timing"), f"$.timing.{name}", minimum=0
@@ -419,6 +479,21 @@ def _parse_timing(raw: Mapping[str, Any]) -> Timing:
         raise _fail(
             "$.timing.hold_default_ms",
             values["hold_default_ms"],
+            f"a value <= $.timing.hold_max_ms ({values['hold_max_ms']})",
+        )
+    # 경유가 본 전이보다 느리면 경유 글자만 눈에 띄게 늦어진다. 학습자가 자세가
+    # 아니라 타이밍으로 글자를 구별하게 된다 (DECISIONS.md §55).
+    if values["approach_transition_ms"] >= values["transition_ms"]:
+        raise _fail(
+            "$.timing.approach_transition_ms",
+            values["approach_transition_ms"],
+            f"a value < $.timing.transition_ms ({values['transition_ms']})",
+        )
+    # 펌웨어는 hold_max_ms 를 넘는 유지를 ETIME 으로 거부한다.
+    if values["approach_hold_ms"] > values["hold_max_ms"]:
+        raise _fail(
+            "$.timing.approach_hold_ms",
+            values["approach_hold_ms"],
             f"a value <= $.timing.hold_max_ms ({values['hold_max_ms']})",
         )
     if observe_from == OBSERVE_FROM_SETTLED and values["settle_ms"] <= 0:
@@ -594,10 +669,15 @@ def load_config(path: "str | Path" = DEFAULT_CONFIG_PATH) -> Config:
     poses_node = _require_mapping(_require_key(root, "poses", "$"), "$.poses")
     if not poses_node:
         raise _fail("$.poses", poses_node, "at least one letter pose")
-    poses = {
-        letter: _parse_pose(pose, f"$.poses.{letter}", fingers)
-        for letter, pose in poses_node.items()
-    }
+    poses: Dict[str, Pose] = {}
+    approaches: Dict[str, str] = {}
+    for letter, pose in poses_node.items():
+        poses[letter], approach = _parse_letter_pose(
+            pose, f"$.poses.{letter}", fingers
+        )
+        if approach is not None:
+            approaches[letter] = approach
+    _check_approaches(approaches, poses)
 
     neutral = _parse_pose(_require_key(root, "neutral", "$"), "$.neutral", fingers)
     safe = _parse_pose(_require_key(root, "safe", "$"), "$.safe", fingers)
@@ -616,6 +696,7 @@ def load_config(path: "str | Path" = DEFAULT_CONFIG_PATH) -> Config:
         pins=pins,
         timing=timing,
         poses=poses,
+        approaches=approaches,
         neutral=neutral,
         safe=safe,
         validation=validation,

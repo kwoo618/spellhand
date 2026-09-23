@@ -51,6 +51,7 @@ __all__ = [
     "DeviceNotIdleError",
     "SessionLock",
     "SafetyGate",
+    "PoseStep",
     "PURPOSE_ITEM",
     "PURPOSE_DEMO",
     "MAX_DRIVE_REQUESTS_PER_SESSION",
@@ -275,6 +276,18 @@ class _Authorized:
     poses: Tuple[Pose, ...]
 
 
+@dataclass(frozen=True)
+class PoseStep:
+    """글자 하나를 표현하는 동작. 목표 자세와, 있으면 먼저 거치는 경유 자세.
+
+    둘 다 게이트 ④⑤ 를 지난 Pose 다. 글자 이름은 담지 않는다 (R2) — 경유가
+    어느 글자인지는 설정만 안다 (DECISIONS.md §55).
+    """
+
+    pose: Pose
+    approach: Optional[Pose] = None
+
+
 class SafetyGate:
     """구동 요청 하나를 검사하고 통과시킨다.
 
@@ -316,7 +329,25 @@ class SafetyGate:
         depth_unlocked: bool,
         purpose: str = PURPOSE_ITEM,
     ) -> Tuple[Pose, ...]:
-        """구동 요청 하나를 검사하고 글자별 Pose 를 돌려준다.
+        """`authorize_steps()` 와 같은 검사. 글자별 목표 Pose 만 돌려준다."""
+        steps = self.authorize_steps(
+            session_id, letters, track, depth_unlocked=depth_unlocked, purpose=purpose
+        )
+        return tuple(step.pose for step in steps)
+
+    def authorize_steps(
+        self,
+        session_id: int,
+        letters: str,
+        track: str,
+        *,
+        depth_unlocked: bool,
+        purpose: str = PURPOSE_ITEM,
+    ) -> Tuple[PoseStep, ...]:
+        """구동 요청 하나를 검사하고 글자별 PoseStep 을 돌려준다.
+
+        경유 자세도 목표 자세와 같은 ④⑤ 를 지난다. 경유는 같은 구동 요청
+        안의 동작이므로 rate limit·요청 수에 따로 잡히지 않는다.
 
         글자 → Pose 변환까지 여기서 하는 이유는, 게이트를 통과한 것과 실제로
         보내는 것이 같은 값임을 보장하기 위해서다. 중립 삽입은 `session.py` 가
@@ -355,8 +386,8 @@ class SafetyGate:
                 f"unlocked yet for this learner"
             )
 
-        # ④ flex 조회·clamp / ⑤ 각도 변환·clamp
-        poses = tuple(self._pose_for(letter) for letter in text)
+        # ④ flex 조회·clamp / ⑤ 각도 변환·clamp — 경유 자세 포함
+        steps = tuple(self._step_for(letter) for letter in text)
 
         # ⑥ rate limit — 요청 단위
         now = self._clock()
@@ -388,7 +419,14 @@ class SafetyGate:
 
         self._last_request_at = now
         self._request_counts[session_id] = used + 1
-        return poses
+        return steps
+
+    def _step_for(self, letter: str) -> PoseStep:
+        approach = self._config.approach_of(letter)
+        return PoseStep(
+            pose=self._pose_for(letter),
+            approach=None if approach is None else self._pose_for(approach),
+        )
 
     def _pose_for(self, letter: str) -> Pose:
         """게이트 ④⑤. flex 를 자르고, 각도로 바꿔 보아 범위를 확인한다."""
