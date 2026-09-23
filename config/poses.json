@@ -39,7 +39,7 @@
     "idle_timeout_ms": 30000,
     "approach_transition_ms": 300,
     "approach_hold_ms": 200,
-    "_note": "transition/hold는 실측. hold_min 2000의 성격은 2026-09-08 확인 결과 정착 시간도 부하 한계도 아니었다 — 하한 자체가 불필요했고 800ms까지 안정 동작을 확인해 하한을 내렸다. 정착 시간 가설이 기각되었으므로 observe_from은 arrival, settle_ms는 0을 유지한다"
+    "_note": "transition/hold는 실측. hold_min 2000의 성격은 2026-09-08 확인 결과 정착 시간도 부하 한계도 아니었다 — 하한 자체가 불필요했고 800ms까지 안정 동작을 확인해 하한을 내렸다. 정착 시간 가설이 기각되었으므로 observe_from은 arrival, settle_ms는 0을 유지한다. approach_transition_ms(300)·approach_hold_ms(200)는 추정값이며 실기 확인 전까지 미확정이다 — 실측도 서보 사양도 근거가 아니다 (DECISIONS §55)"
   },
 
   "poses": {

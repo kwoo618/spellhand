@@ -425,7 +425,6 @@ class SessionController:
         self._retry_pending = False
         self._presented_at: Optional[datetime] = None
         self._ready_at: Optional[datetime] = None
-        self._approach_ms = 0
         self._outcomes: List[ItemOutcome] = []
         self._last_demo: Optional[DemoShown] = None
         self._heavy_caps: Mapping[str, int] = {}
@@ -677,14 +676,13 @@ class SessionController:
                 length=len(spec.letters),
                 attempt=self._attempt,
             )
-            presented_at, ready_at, approach_ms = self._present(
+            presented_at, ready_at = self._present(
                 self.session_id,
                 spec,
                 depth_unlocked=self._depth_unlocked(self.learner_id),
             )
             self._presented_at = presented_at
             self._ready_at = ready_at
-            self._approach_ms = approach_ms
             self._state = SessionState.AWAITING_ANSWER
             self._emit("done", index=self._seq)
 
@@ -832,7 +830,7 @@ class SessionController:
                 attempt=self._attempt,
             )
             try:
-                presented_at, ready_at, approach_ms = self._present(
+                presented_at, ready_at = self._present(
                     self.session_id, spec, depth_unlocked=depth
                 )
             except Exception:
@@ -852,7 +850,6 @@ class SessionController:
 
             self._presented_at = presented_at
             self._ready_at = ready_at
-            self._approach_ms = approach_ms
             self._state = SessionState.AWAITING_ANSWER
             self._emit("done", index=self._seq)
             return self._prompt()
@@ -875,7 +872,6 @@ class SessionController:
             judgement=judgement,
             presented_at=self._presented_at,
             ready_at=self._ready_at,
-            approach_ms=self._approach_ms,
             answered_at=answered_at,
         )
 
@@ -1071,12 +1067,10 @@ class SessionController:
 
     def _present(
         self, session_id: int, spec: ItemSpec, *, depth_unlocked: bool
-    ) -> Tuple[datetime, datetime, int]:
+    ) -> Tuple[datetime, datetime]:
         """문항 하나를 손으로 표현한다. 구동 요청 1건이다.
 
         중립 삽입은 여기서 한다. 어댑터 아래로는 글자가 내려가지 않는다 (R2).
-
-        세 번째 값은 경유에 쓴 시간(ms)의 합이다. 경유가 없으면 0 이다.
         """
         steps = self._gate.authorize_steps(
             session_id,
@@ -1086,7 +1080,6 @@ class SessionController:
             purpose=PURPOSE_ITEM,
         )
         presented_at = self._clock()
-        approach_ms = 0
         for index, step in enumerate(steps):
             # 글자마다 heartbeat 를 찍는다. 문항 단위로는 부족하다 — 7글자를
             # 느린 재생으로 내면 한 문항이 락 만료 시간을 넘길 수 있다
@@ -1095,7 +1088,7 @@ class SessionController:
             if index and spec.boundary == BOUNDARY_EXPLICIT:
                 # 또박또박 모드: 글자 사이에 중립 자세로 경계를 만든다.
                 self._device.neutral()
-            approach_ms += self._move_step(step, spec.transition_ms, spec.hold_ms)
+            self._move_step(step, spec.transition_ms, spec.hold_ms)
             # 글자별 도달 알림. 어느 글자인지는 보내지 않는다 — 위치만이다.
             self._emit("ready", index=self._seq, letter_pos=index)
 
@@ -1112,24 +1105,21 @@ class SessionController:
             if arrived_at is not None
             else self._clock() - timedelta(milliseconds=spec.hold_ms)
         )
-        return presented_at, ready_at, approach_ms
+        return presented_at, ready_at
 
-    def _move_step(self, step: PoseStep, transition_ms: int, hold_ms: int) -> int:
+    def _move_step(self, step: PoseStep, transition_ms: int, hold_ms: int) -> None:
         """글자 하나의 동작. 경유가 있으면 경유 자세를 먼저 지난다.
 
         P 명령을 두 번 보내는 것이 전부다. 펌웨어·어댑터는 경유를 모른다 (R2).
         경유 시간은 느린 재생에서도 늘리지 않는다 — 보여 주는 자세가 아니라
-        텐던을 당기는 동작이다 (DECISIONS.md §55). 경유에 쓴 ms 를 돌려준다.
+        텐던을 당기는 동작이다 (DECISIONS.md §55).
         """
-        spent = 0
         if step.approach is not None:
             timing = self._config.timing
             self._device.move_to(
                 step.approach, timing.approach_transition_ms, timing.approach_hold_ms
             )
-            spent = timing.approach_transition_ms + timing.approach_hold_ms
         self._device.move_to(step.pose, transition_ms, hold_ms)
-        return spent
 
     def _demo_pair(
         self, session_id: int, track: str, judgement: judge_module.Judgement
@@ -1213,7 +1203,6 @@ class SessionController:
         judgement: judge_module.Judgement,
         presented_at: datetime,
         ready_at: datetime,
-        approach_ms: int,
         answered_at: datetime,
     ) -> None:
         with self._db.session() as db:
@@ -1227,7 +1216,6 @@ class SessionController:
                 boundary=spec.boundary,
                 presented_at=presented_at,
                 ready_at=ready_at,
-                approach_ms=approach_ms,
                 answered_at=answered_at,
                 answer=answer,
                 result=judgement.result,

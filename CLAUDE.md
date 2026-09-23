@@ -82,7 +82,7 @@ R5. 추측으로 빈칸을 채우지 않는다. TBD는 TBD로 남긴다. 규칙�
 - 목표: 신규 개발. 기준 문서는 기획서 v3 + PRD v2.1.
   **1차 완료 기준(Mock에서 판별 8 + 단어 4 세션 완주 + 트랙별 요약)은 달성했다.**
 
-- 완료 (609테스트):
+- 완료 (604테스트):
   - `config` — poses.json schema v2(핀 포함) + words.json 필터
   - `calibration` — flex ↔ 각도, 이중 clamp, CAL_HASH
   - `device` — Pose/DeviceAdapter(동기), MockDevice, SerialDevice, 팩토리
@@ -111,10 +111,10 @@ R5. 추측으로 빈칸을 채우지 않는다. TBD는 TBD로 남긴다. 규칙�
     계수·단 전환 조건 조정은 4주차 실측 오답률로 판단한다
   - **E 약지 — 경유(approach)로 임시 우회, 실기 확인 전** (DECISIONS §55).
     펴진 상태에서 오면 약지가 덜 접힌다(텐던 히스테리시스). E 는 S 를 거쳐
-    간다. 경유 시간 300/200ms 는 초안값이고 전기팀 입회 실기 확인이 남았다.
-    E 수치 자체는 바꾸지 않았다. 하드웨어가 고쳐지면 `approach` 를 지운다
-  - **`station.db` 마이그레이션 미적용** — `items.approach_ms`. 적용 전에는
-    서버가 `SchemaOutdatedError` 로 뜨지 않는다. `tools/migrate_db.py` (승인 필요)
+    간다. 경유 시간 300/200ms 는 **추정값이고 실기 확인 전까지 미확정**이다.
+    전기팀 입회 실기 확인이 남았다. E 수치 자체는 바꾸지 않았다. 하드웨어가
+    고쳐지면 `approach` 를 지운다. 경유 여부는 `items` 에 없고 `letters` + 당시
+    `poses.json` 으로 복원한다
   - **mockhand 주먹 자세에서 손가락이 겹쳐 그려진다.** 미수정. 발표 폴백 화면이라
     고쳐야 한다. 시각화만의 문제이고 flex 값·실기 동작과는 무관하다
   - **승인과 참여 사이 60초 창 (DECISIONS §50.5) — 고치지 않기로 결정했다.**

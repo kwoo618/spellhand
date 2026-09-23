@@ -11,28 +11,19 @@
 import copy
 import json
 import random
-import sqlite3
 from datetime import timedelta
 
 import pytest
 
 from server.calibration import calibration_hash
 from server.config import load_config, load_words
-from server.db import (
-    BOUNDARY_DIRECT,
-    BOUNDARY_EXPLICIT,
-    TRACK_DISCRIMINATION,
-    Database,
-    Item,
-    SchemaOutdatedError,
-)
+from server.db import BOUNDARY_DIRECT, BOUNDARY_EXPLICIT, TRACK_DISCRIMINATION, Item
 from server.device import Pose
 from server.device.mock import MockDevice
 from server.safety import PoseStep, SafetyGate, SessionLock
 from server.session import SessionController
 from tests.conftest import REAL_POSES, REAL_WORDS
 from tests.test_serial import FakePort, build
-from tools import migrate_db
 
 
 # --------------------------------------------------------------------------- #
@@ -282,7 +273,7 @@ def test_the_confusion_demo_also_goes_through_the_approach(config, db, clock):
 
 
 # --------------------------------------------------------------------------- #
-# ready_at 과 기록
+# ready_at
 # --------------------------------------------------------------------------- #
 
 def test_ready_at_is_the_final_arrival_not_the_approach(config, db, clock):
@@ -304,34 +295,6 @@ def test_ready_at_is_the_final_arrival_not_the_approach(config, db, clock):
         + timing.approach_hold_ms
         + timing.transition_ms
     )
-
-
-def test_items_record_the_time_spent_on_approaches(config, db, clock):
-    letter = approached_letter(config)
-    device = SpyDevice(config, clock)
-    device.connect()
-    controller = make_controller(config, db, device, clock)
-
-    present(controller, config, letter)
-    controller.submit(letter)
-
-    timing = config.timing
-    assert only_item(db).approach_ms == (
-        timing.approach_transition_ms + timing.approach_hold_ms
-    )
-
-
-def test_items_without_approach_record_zero(config, db, clock):
-    letters = "".join(plain_letters(config)[:3])
-    device = SpyDevice(config, clock)
-    device.connect()
-    controller = make_controller(config, db, device, clock)
-
-    present(controller, config, letters)
-    controller.submit(letters)
-
-    # 0 은 "경유 없음" 이다. NULL(컬럼 이전 기록, 모름)과 구별된다.
-    assert only_item(db).approach_ms == 0
 
 
 # --------------------------------------------------------------------------- #
@@ -432,58 +395,3 @@ def test_serial_ready_at_is_the_last_rdy(config, db, clock):
     item = only_item(db)
     assert item.ready_at == final_rdy
     assert item.ready_at != approach_rdy
-
-
-# --------------------------------------------------------------------------- #
-# 마이그레이션 — items.approach_ms
-# --------------------------------------------------------------------------- #
-
-def old_schema_db(path):
-    """approach_ms 가 생기기 전의 station.db 를 흉내낸다. 기록 한 줄이 있다."""
-    Database(f"sqlite+pysqlite:///{path.as_posix()}").create_all()
-    conn = sqlite3.connect(path)
-    with conn:
-        conn.execute("ALTER TABLE items DROP COLUMN approach_ms")
-        conn.execute("INSERT INTO learners (id, name, created_at) VALUES (1, 'a', '2026-09-01')")
-        conn.execute(
-            "INSERT INTO sessions (id, learner_id, status, source) "
-            "VALUES (1, 1, 'done', 'rule')"
-        )
-        conn.execute(
-            "INSERT INTO items (session_id, seq, track, letters, hold_ms, "
-            "transition_ms, boundary, attempt) "
-            "VALUES (1, 1, 'discrimination', 'VWB', 3000, 900, 'explicit', 1)"
-        )
-    conn.close()
-
-
-def test_an_outdated_database_refuses_to_start(tmp_path):
-    path = tmp_path / "station.db"
-    old_schema_db(path)
-
-    with pytest.raises(SchemaOutdatedError) as exc:
-        Database(f"sqlite+pysqlite:///{path.as_posix()}").create_all()
-    assert exc.value.missing == {"items": ("approach_ms",)}
-
-
-def test_migration_adds_the_column_and_leaves_old_rows_unknown(tmp_path):
-    path = tmp_path / "station.db"
-    old_schema_db(path)
-
-    assert migrate_db.main(["--check", "--db", str(path)]) == 1
-    assert migrate_db.main(["--db", str(path)]) == 0
-    assert migrate_db.main(["--check", "--db", str(path)]) == 0
-    assert migrate_db.main(["--db", str(path)]) == 0  # 다시 돌려도 같다
-
-    db = Database(f"sqlite+pysqlite:///{path.as_posix()}")
-    db.create_all()
-    with db.session() as session:
-        (item,) = session.query(Item).all()
-    # 이전 기록은 추정해 채우지 않는다 (R5).
-    assert item.approach_ms is None
-
-
-def test_migration_does_not_create_a_missing_database(tmp_path):
-    path = tmp_path / "nowhere.db"
-    assert migrate_db.main(["--check", "--db", str(path)]) == 1
-    assert not path.exists()

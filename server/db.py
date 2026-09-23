@@ -7,17 +7,13 @@
 
 `items.track` 과 `confusions.track` 이 같은 값을 중복해서 들고 있는 것은 PRD 8장이
 의도한 것이다 — 트랙별 집계에서 JOIN 을 피해 두 트랙이 섞일 경로를 하나 줄인다.
-
-PRD 8장 밖의 컬럼은 `items.approach_ms` 하나다 (DECISIONS.md §55). 기존 테이블에
-컬럼을 더하는 것은 `create_all()` 이 하지 않으므로 `tools/migrate_db.py` 로만
-붙인다. 붙지 않은 DB 로는 뜨지 않는다 — `SchemaOutdatedError`.
 """
 
 from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from typing import Dict, Iterator, Optional, Tuple
+from typing import Iterator, Optional
 
 from sqlalchemy import (
     CheckConstraint,
@@ -29,7 +25,6 @@ from sqlalchemy import (
     UniqueConstraint,
     create_engine,
     func,
-    inspect,
     select,
 )
 from sqlalchemy.orm import (
@@ -50,7 +45,6 @@ __all__ = [
     "DeviceLock",
     "LearnerDifficulty",
     "Database",
-    "SchemaOutdatedError",
     "utcnow",
     "TRACK_DISCRIMINATION",
     "TRACK_WORD",
@@ -147,10 +141,6 @@ class Item(Base):
     presented_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     # 마지막 글자가 목표 자세에 도달한 시각. 응답 시간의 기준점이다 (PRD 8장).
     ready_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
-    # 이 문항을 표현하며 경유 자세에 쓴 시간(ms)의 합. 경유가 없으면 0 이다.
-    # NULL 은 이 컬럼이 생기기 전의 기록 — 경유 여부를 모른다 (DECISIONS.md §55).
-    # presented_at ~ ready_at 구간에 이 시간이 들어 있다. ready_at 은 목표 도달이다.
-    approach_ms: Mapped[Optional[int]] = mapped_column(Integer)
     answered_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     answer: Mapped[Optional[str]] = mapped_column(Text)
     result: Mapped[Optional[str]] = mapped_column(Text)
@@ -217,24 +207,6 @@ class DeviceLock(Base):
     heartbeat_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
 
 
-class SchemaOutdatedError(Exception):
-    """DB 파일의 기존 테이블에 모델이 요구하는 컬럼이 없다.
-
-    `create_all()` 은 없는 테이블만 만들고 기존 테이블에 컬럼을 더하지 않는다.
-    그대로 뜨면 첫 조회나 기록에서 SQL 오류로 세션이 죽는다. 기동에서 막는다.
-    """
-
-    def __init__(self, missing: Dict[str, Tuple[str, ...]]) -> None:
-        self.missing = dict(missing)
-        detail = "; ".join(
-            f"{table}: {', '.join(columns)}" for table, columns in sorted(missing.items())
-        )
-        super().__init__(
-            f"database schema is outdated, missing columns ({detail}); "
-            f"run tools/migrate_db.py"
-        )
-
-
 class Database:
     """엔진 하나와 그 위의 세션 팩토리."""
 
@@ -262,24 +234,7 @@ class Database:
 
     def create_all(self) -> None:
         Base.metadata.create_all(self._engine)
-        missing = self.missing_columns()
-        if missing:
-            raise SchemaOutdatedError(missing)
         self._ensure_lock_row()
-
-    def missing_columns(self) -> Dict[str, Tuple[str, ...]]:
-        """이미 있는 테이블마다, 모델에는 있고 DB 에는 없는 컬럼."""
-        inspector = inspect(self._engine)
-        existing_tables = set(inspector.get_table_names())
-        missing: Dict[str, Tuple[str, ...]] = {}
-        for table in Base.metadata.sorted_tables:
-            if table.name not in existing_tables:
-                continue
-            present = {column["name"] for column in inspector.get_columns(table.name)}
-            absent = tuple(c.name for c in table.columns if c.name not in present)
-            if absent:
-                missing[table.name] = absent
-        return missing
 
     def drop_all(self) -> None:
         Base.metadata.drop_all(self._engine)
