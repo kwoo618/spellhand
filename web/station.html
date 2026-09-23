@@ -62,6 +62,7 @@
     color: var(--muted);
     cursor: pointer;
   }
+  .navItem:disabled { opacity: 0.4; cursor: default; }
   .navItem[aria-current="page"] { color: var(--ink); font-weight: 600; background: #efefed; }
   .navTool {
     margin-top: 0.75rem;
@@ -211,6 +212,45 @@
   }
   #learnerMode .recovery button.armed { color: #8a2b2b; text-decoration: none; font-weight: 600; }
   #learnerMode .recovery .note { display: inline; margin-left: 0.6rem; }
+
+  /* 글자 버튼 — 공부 화면과 훈련의 버튼·끌어 놓기 입력이 같이 쓴다.
+     목록은 서버가 준다 (`/api/letters`). 디자인은 다음 작업이다 — 기존 버튼
+     모양을 그대로 쓰고 크기만 맞춘다 (DECISIONS §56). */
+  #learnerMode .pad { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.75rem; }
+  #learnerMode .pad button,
+  #learnerMode .tile {
+    min-width: 3rem;
+    padding: 0.6rem 0;
+    font-size: 1.3rem;
+    text-align: center;
+  }
+  #learnerMode .pad button.wide { min-width: 0; padding: 0.6rem 1rem; font-size: 1rem; }
+  #learnerMode .tile {
+    display: inline-block;
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    background: #fff;
+    user-select: none;
+  }
+  #learnerMode #composeBox.grab .tile { cursor: grab; touch-action: none; }
+  #learnerMode .pad.off .tile { opacity: 0.4; }
+  #learnerMode .composed {
+    min-height: 3.6rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    padding: 0.4rem;
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    background: #fff;
+  }
+  #learnerMode .composed.over { outline: 2px dashed var(--accent); outline-offset: 1px; }
+  #learnerMode fieldset.modes { border: 0; padding: 0; margin: 0 0 1.5rem; }
+  #learnerMode fieldset.modes legend { color: var(--muted); padding: 0; margin-bottom: 0.4rem; }
+  #learnerMode fieldset.modes label {
+    display: inline-flex; align-items: center; gap: 0.35rem;
+    margin: 0 1.1rem 0 0; color: var(--ink);
+  }
 
   /* 내 진행. 요약 표와 같은 모양으로 둔다 — 새 시각 요소를 들이지 않는다. */
   #learnerMode .block { margin-top: 2.5rem; }
@@ -423,6 +463,7 @@
 
     <!-- 학습자 모드의 화면들. 혼동 쌍·약점 쌍으로 가는 길은 여기 없다 (§52) -->
     <div class="navGroup" id="learnerNav">
+      <button class="navItem" type="button" data-view="study">공부</button>
       <button class="navItem" type="button" data-view="train" aria-current="page">훈련</button>
       <button class="navItem" type="button" data-view="progress">내 진행</button>
     </div>
@@ -449,6 +490,58 @@
   <!-- 학습자 모드                                                        -->
   <!-- ================================================================ -->
   <div id="learnerMode">
+    <!-- 공부 — 글자를 눌러 손으로 본다. 기록은 남지 않는다 (DECISIONS §56).
+         글자 버튼은 서버가 준 목록으로 그린다. 여기 박지 않는다 -->
+    <main id="studyView" hidden>
+      <header>
+        <span class="learner">공부</span>
+        <span class="counter" id="studyWho"></span>
+      </header>
+
+      <section id="studyStart">
+        <p class="note">
+          글자를 하나씩 눌러 로봇손으로 봅니다. 채점하지 않고, 기록도 남지 않습니다.
+        </p>
+        <label for="studyName">이름</label>
+        <input type="text" id="studyName" class="plain" autocomplete="off">
+        <div class="row">
+          <button class="primary" id="studyStartBtn" type="button">공부 시작</button>
+        </div>
+        <p class="note" id="studyNote"></p>
+      </section>
+
+      <section id="studyPanel" hidden>
+        <div class="status">
+          <span class="dot" id="studyDot"></span>
+          <span id="studyStatus">글자를 누르면 손이 그 자세를 만듭니다</span>
+          <button class="stop" id="studyStopBtn" type="button" hidden>정지</button>
+        </div>
+
+        <div class="pad" id="studyPad"></div>
+
+        <section class="block">
+          <h2>글자가 아닌 자세</h2>
+          <p class="note">
+            중립은 또박또박 문항에서 글자와 글자 사이에 지나갑니다. 글자로 읽지 않습니다.
+            쉬는 자세는 손이 쉴 때의 자세입니다.
+          </p>
+          <div class="pad" id="studyRefPad"></div>
+        </section>
+
+        <div class="row" style="margin-top:2.5rem">
+          <button id="studyEndBtn" type="button">공부 마치기</button>
+        </div>
+      </section>
+
+      <p class="error" id="studyError"></p>
+
+      <!-- 훈련 화면과 같은 복구 수단. 락이 잡혀 있을 때만 보인다 (§51) -->
+      <div class="recovery" id="studyRecoveryRow" hidden>
+        <button id="studyResetBtn" type="button">세션 끝내고 손 놓기</button>
+        <span class="note" id="studyResetNote"></span>
+      </div>
+    </main>
+
     <!-- 훈련 — practice.html 에서 옮겨 왔다. 흐름은 그대로다 -->
     <main id="trainView">
     <header>
@@ -458,6 +551,16 @@
 
     <!-- 시작 -->
     <section id="startPanel">
+      <!-- 답 입력 방법. 세션을 시작할 때 하나를 고르고, 세션 중에는 바꾸지
+           않는다 — 바꾸면 응답 시간이 두 방법의 혼합이 된다 (DECISIONS §56) -->
+      <fieldset class="modes" id="inputModes">
+        <legend>답 입력 방법</legend>
+        <label><input type="radio" name="inputMode" value="typing" checked> 타자</label>
+        <label><input type="radio" name="inputMode" value="buttons"> 버튼</label>
+        <label><input type="radio" name="inputMode" value="drag"> 끌어 놓기</label>
+        <p class="note" id="inputModeNote">세션 중에는 바꿀 수 없습니다.</p>
+      </fieldset>
+
       <!-- 선생님이 승인한 세션이 열려 있을 때만 나온다. 이때 이름 입력은 숨는다 -->
       <div id="joinBox" hidden>
         <p class="note" id="joinNote"></p>
@@ -492,6 +595,16 @@
 
       <label for="answer">읽은 글자</label>
       <input type="text" id="answer" autocomplete="off" autocapitalize="characters" spellcheck="false" disabled>
+      <!-- 버튼·끌어 놓기 입력. 세션이 고른 방법 하나만 보인다. 버튼은 문항과
+           무관하게 **표현 가능한 글자 전부**다 — 정답만 보이면 정답 유출이다 -->
+      <div id="composeBox" hidden>
+        <div class="composed" id="composed" aria-live="polite"></div>
+        <div class="pad" id="answerPad"></div>
+        <div class="row">
+          <button id="backBtn" type="button" disabled>한 글자 지우기</button>
+          <button id="clearBtn" type="button" disabled>모두 지우기</button>
+        </div>
+      </div>
       <div class="row">
         <button class="primary" id="submitBtn" disabled>제출</button>
         <button id="replayBtn" disabled>다시 보기</button>
@@ -710,6 +823,13 @@ const state = {
   declined: null,
   // 마지막으로 세션에 든 이름. "내 진행" 이 이 이름으로 먼저 불러온다.
   learnerName: null,
+  // 이 세션의 답 입력 방법. 세션을 시작할 때 정해지고 세션 중에는 바뀌지
+  // 않는다 (§56). 세션이 없으면 null.
+  inputMode: null,
+  // 표현 가능한 글자. `/api/letters` 가 준 것이다 — 이 화면은 글자를 모른다.
+  letters: [],
+  // 버튼·끌어 놓기로 모은 답.
+  composed: [],
 };
 
 function show(id, visible) { el(id).hidden = !visible; }
@@ -887,7 +1007,8 @@ function setAnswering(enabled) {
   el("answer").disabled = !enabled;
   el("submitBtn").disabled = !enabled;
   el("replayBtn").disabled = !enabled;
-  if (enabled) el("answer").focus();
+  setComposing(enabled);
+  if (enabled && state.inputMode === "typing") el("answer").focus();
 }
 
 /** 손이 움직이는 동안에만 정지 버튼을 보인다. */
@@ -911,6 +1032,176 @@ function showStopped() {
 function showStalled() {
   el("status").textContent = "문항이 나가지 못했습니다 — [다시 보기] 로 다시 시도합니다";
   el("replayBtn").disabled = false;
+}
+
+// --------------------------------------------------------------------- //
+// 답 입력 방법 — 타자 · 버튼 · 끌어 놓기 중 하나만 (DECISIONS §56)
+// --------------------------------------------------------------------- //
+
+/** 표현 가능한 글자를 서버에서 받는다. 공부 화면과 훈련 입력이 같이 쓴다. */
+async function loadLetters() {
+  if (state.letters.length) return state.letters;
+  const body = await call("GET", "/api/letters");
+  state.letters = body.letters;
+  return state.letters;
+}
+
+function chosenInputMode() {
+  const checked = document.querySelector('input[name="inputMode"]:checked');
+  return checked ? checked.value : "typing";
+}
+
+/**
+ * 고르는 칸을 잠그거나 푼다. `fixed` 가 있으면 그 값으로 잠근다 — 이미 방법이
+ * 정해진 세션에 다시 참여하는 경우다. 세션 중에는 다시 고를 수 없다.
+ */
+function renderInputChooser(fixed) {
+  for (const radio of document.querySelectorAll('input[name="inputMode"]')) {
+    if (fixed) radio.checked = radio.value === fixed;
+    radio.disabled = Boolean(fixed);
+  }
+  el("inputModeNote").textContent = fixed
+    ? "이 세션은 입력 방법이 이미 정해져 있습니다."
+    : "세션 중에는 바꿀 수 없습니다.";
+}
+
+/** 세션의 입력 방법을 화면에 건다. 세 가지 중 **하나만** 보인다. */
+function applyInputMode(mode) {
+  state.inputMode = mode || "typing";
+  const typing = state.inputMode === "typing";
+  show("answer", typing);
+  show("composeBox", !typing);
+  el("composed").classList.remove("over");
+  state.composed = [];
+  if (!typing) { renderAnswerPad(); renderComposed(); }
+}
+
+/**
+ * 답 버튼·글자 조각을 그린다.
+ *
+ * **표현 가능한 글자 전부를, 늘 같은 순서로** 그린다. 지금 문항이 무엇인지는
+ * 이 함수에 들어오지 않는다 — 문항에 맞춰 버튼을 줄이면 그것이 곧 정답
+ * 공개다. 목록은 `state.letters`(서버의 `/api/letters`) 하나뿐이다.
+ */
+function renderAnswerPad() {
+  const pad = el("answerPad");
+  clear(pad);
+  const drag = state.inputMode === "drag";
+  for (const letter of state.letters) {
+    if (drag) {
+      const tile = add(pad, "span", "tile", letter);
+      tile.addEventListener("pointerdown", (e) => beginDrag(e, tile, { letter }));
+    } else {
+      const button = add(pad, "button", null, letter);
+      button.type = "button";
+      button.addEventListener("click", () => composeAt(state.composed.length, letter));
+    }
+  }
+  setComposing(!el("answer").disabled);
+}
+
+/** 모은 답을 그린다. 끌어 놓기에서는 놓인 글자도 다시 끌 수 있다. */
+function renderComposed() {
+  const box = el("composed");
+  clear(box);
+  const drag = state.inputMode === "drag";
+  state.composed.forEach((letter, index) => {
+    const tile = add(box, "span", "tile", letter);
+    if (drag) {
+      tile.addEventListener("pointerdown", (e) => beginDrag(e, tile, { from: index }));
+    }
+  });
+  setComposing(!el("answer").disabled);
+}
+
+function composeAt(index, letter) {
+  state.composed.splice(index, 0, letter);
+  renderComposed();
+}
+
+/** 놓은 자리. 놓인 글자들의 가운데를 기준으로 몇 번째 사이인지 센다. */
+function dropIndex(x, y) {
+  const tiles = [...el("composed").children];
+  const at = tiles.findIndex((tile) => {
+    const box = tile.getBoundingClientRect();
+    return y < box.bottom && x < box.left + box.width / 2;
+  });
+  return at === -1 ? tiles.length : at;
+}
+
+function overComposed(x, y) {
+  const box = el("composed").getBoundingClientRect();
+  return x >= box.left && x <= box.right && y >= box.top && y <= box.bottom;
+}
+
+/**
+ * 끌어 놓기. HTML5 드래그 대신 포인터 이벤트다 — 터치에서도 되고, 자동화
+ * 도구로 실제 끌기를 재현해 확인할 수 있다.
+ *
+ * 조각을 답 칸에 놓으면 그 자리에 들어가고, 답 칸의 조각을 옮기면 자리가
+ * 바뀌고, 답 칸 밖에 놓으면 빠진다. **누르기만 해서는 들어가지 않는다** —
+ * 그것은 버튼 방식이다.
+ */
+function beginDrag(event, tile, source) {
+  if (el("answer").disabled || state.inputMode !== "drag") return;
+  event.preventDefault();
+  const ghost = tile.cloneNode(true);
+  ghost.style.cssText =
+    "position:fixed;pointer-events:none;opacity:0.8;z-index:10;margin:0";
+  document.body.appendChild(ghost);
+  const place = (e) => {
+    ghost.style.left = `${e.clientX - ghost.offsetWidth / 2}px`;
+    ghost.style.top = `${e.clientY - ghost.offsetHeight / 2}px`;
+    el("composed").classList.toggle("over", overComposed(e.clientX, e.clientY));
+  };
+  place(event);
+  const done = (e) => {
+    document.removeEventListener("pointermove", place);
+    document.removeEventListener("pointerup", done);
+    document.removeEventListener("pointercancel", done);
+    ghost.remove();
+    el("composed").classList.remove("over");
+    if (e.type === "pointercancel" || el("answer").disabled) return;
+    const inside = overComposed(e.clientX, e.clientY);
+    if (source.from !== undefined) {
+      const [moved] = state.composed.splice(source.from, 1);
+      if (inside) {
+        let at = dropIndex(e.clientX, e.clientY);
+        if (source.from < at) at -= 1;
+        state.composed.splice(at, 0, moved);
+      }
+      renderComposed();
+    } else if (inside) {
+      composeAt(dropIndex(e.clientX, e.clientY), source.letter);
+    }
+  };
+  document.addEventListener("pointermove", place);
+  document.addEventListener("pointerup", done);
+  document.addEventListener("pointercancel", done);
+}
+
+/** 답 입력이 열리고 닫힐 때. 버튼·조각·지우기를 함께 맞춘다. */
+function setComposing(enabled) {
+  const drag = state.inputMode === "drag";
+  el("answerPad").classList.toggle("off", !enabled);
+  if (!drag) {
+    for (const node of el("answerPad").children) { node.disabled = !enabled; }
+  }
+  el("composeBox").classList.toggle("grab", drag && enabled);
+  el("backBtn").disabled = !enabled || !state.composed.length;
+  el("clearBtn").disabled = !enabled || !state.composed.length;
+}
+
+function currentAnswer() {
+  return state.inputMode === "typing"
+    ? el("answer").value.trim()
+    : state.composed.join("");
+}
+
+function clearAnswer() {
+  el("answer").value = "";
+  state.composed = [];
+  if (state.inputMode && state.inputMode !== "typing") renderComposed();
 }
 
 // --------------------------------------------------------------------- //
@@ -972,6 +1263,9 @@ function renderOpenSession(open) {
   show("joinBox", joinable && !declined);
   show("newBox", !joinable || declined);
   show("rejoinRow", declined);
+  // 방법이 이미 정해진 세션이면 그 값으로 잠근다. 새로 고쳐 다시 들어온
+  // 경로가 그것이다 — 세션 중에 다른 방법을 고르게 두지 않는다 (§56).
+  renderInputChooser(joinable && !declined ? open.input_mode : null);
 
   if (!joinable) { el("joinNote").textContent = ""; return; }
 
@@ -1026,6 +1320,8 @@ function abandonSession(message) {
   state.planned = false;
   state.landed = false;
   state.declined = null;
+  state.inputMode = null;
+  renderInputChooser(null);
   if (state.socket) { state.socket.close(); state.socket = null; }
 
   setError("");
@@ -1102,7 +1398,24 @@ async function joinSession() {
   if (!open) return;
   setError("");
   el("joinBtn").disabled = true;
+
+  // 입력 방법. 이미 정해졌으면 그것을 따르고, 아니면 고른 것을 서버에
+  // 남긴다. 첫 문항 전에만 된다 — 서버가 막는다 (§56).
+  let mode = open.input_mode;
+  try {
+    if (!mode) {
+      mode = chosenInputMode();
+      await call("POST", `/api/sessions/${open.session_id}/input-mode`,
+                 { input_mode: mode });
+    }
+    if (mode !== "typing") await loadLetters();
+  } catch (err) {
+    el("joinBtn").disabled = false;
+    setError(err.message);
+    return;
+  }
   stopOpenPoll();
+  applyInputMode(mode);
 
   state.sessionId = open.session_id;
   // 교사 모드로 가는 문이 세션 유무에 따라 잠긴다 (§52).
@@ -1134,9 +1447,13 @@ async function startSession() {
   const name = el("name").value.trim();
   if (!name) { el("startNote").textContent = "이름을 입력하세요."; return; }
 
+  const mode = chosenInputMode();
   try {
-    const session = await call("POST", "/api/sessions", { learner_name: name });
+    if (mode !== "typing") await loadLetters();
+    const session = await call("POST", "/api/sessions",
+                               { learner_name: name, input_mode: mode });
     stopOpenPoll();
+    applyInputMode(session.input_mode);
     state.sessionId = session.session_id;
     // 교사 모드로 가는 문이 세션 유무에 따라 잠긴다 (§52).
     renderNav();
@@ -1160,7 +1477,7 @@ async function nextItem() {
   show("result", false);
   state.demoAvailable = false;
   el("demoBtn").disabled = true;
-  el("answer").value = "";
+  clearAnswer();
 
   // 승인된 계획에서 온 세션은 문항이 계획에서 나온다. `/planned` 는 문항을
   // 꺼내고 손으로 표현하는 것을 한 번에 하고, **동기다** — 손이 끝난 뒤에
@@ -1250,7 +1567,7 @@ async function present() {
 
 async function submit() {
   setError("");
-  const answer = el("answer").value.trim();
+  const answer = currentAnswer();
   if (!answer) return;
 
   setAnswering(false);
@@ -1266,7 +1583,7 @@ async function submit() {
   if (outcome.retry) {
     // 오답 1회째. 정답은 알려주지 않고 같은 문항을 느리게 다시 낸다.
     el("status").textContent = "다시 한 번 봅니다";
-    el("answer").value = "";
+    clearAnswer();
     // 계획 세션은 재생도 계획 경로로 낸다. `/planned` 는 재생 대기를 보고
     // **같은 문항**을 다시 내며 큐에서 빼지 않는다 (기획서 5.2).
     if (state.planned) { return presentPlanned(); }
@@ -1332,6 +1649,8 @@ async function endSession() {
   renderNav();
   state.planned = false;
   state.prompt = null;
+  state.inputMode = null;
+  renderInputChooser(null);
   renderRecovery(false);
   if (state.socket) { state.socket.close(); state.socket = null; }
   show("trainPanel", false);
@@ -1435,6 +1754,14 @@ el("againBtn").addEventListener("click", () => location.reload());
 el("joinBtn").addEventListener("click", joinSession);
 el("laterBtn").addEventListener("click", declineJoin);
 el("rejoinBtn").addEventListener("click", undeclineJoin);
+el("backBtn").addEventListener("click", () => {
+  state.composed.pop();
+  renderComposed();
+});
+el("clearBtn").addEventListener("click", () => {
+  state.composed = [];
+  renderComposed();
+});
 
 // 기동 조회는 `setMode()` 가 학습자 모드로 열 때 한다. 시작 화면에 머무는
 // 동안만 되묻고, 교사 모드에서는 멈춘다.
@@ -1447,6 +1774,11 @@ el("rejoinBtn").addEventListener("click", undeclineJoin);
 setInterval(() => {
   if (state.sessionId) {
     call("POST", `/api/sessions/${state.sessionId}/heartbeat`).catch(() => {});
+  }
+  // 공부도 락을 쥔다. 같은 주기로 알린다 (§56). 공부가 이미 끝났으면 다음
+  // 버튼이 `LOCK_NOT_HELD` 를 받고 `abandonStudy()` 가 정리한다.
+  if (study.sessionId) {
+    call("POST", `/api/study-sessions/${study.sessionId}/heartbeat`).catch(() => {});
   }
 }, 10000);
 
@@ -2010,7 +2342,7 @@ el("statsRefresh").addEventListener("click", loadStats);
  * V 와 W 를 헷갈린다" 를 알고 문항을 풀면 순수 판별이 아니다.
  */
 const MODE_VIEWS = {
-  learner: { train: "trainView", progress: "progressView" },
+  learner: { study: "studyView", train: "trainView", progress: "progressView" },
   teacher: { plan: "teacherPlanView", confusion: "teacherConfusionView" },
 };
 const DEFAULT_VIEW = { learner: "train", teacher: "plan" };
@@ -2033,6 +2365,11 @@ function teacherLocked() {
   return state.sessionId !== null;
 }
 
+/** 훈련 세션을 쥐고 있는가. 공부 화면은 이때 열리지 않는다 (§56). */
+function trainingHeld() {
+  return state.sessionId !== null;
+}
+
 /** 사이드바를 지금 모드·화면·세션 상태에 맞춘다. */
 function renderNav() {
   const teacher = ui.mode === "teacher";
@@ -2044,6 +2381,11 @@ function renderNav() {
     if (current) { button.setAttribute("aria-current", "page"); }
     else { button.removeAttribute("aria-current"); }
   }
+
+  // 훈련 세션을 쥔 동안은 공부로 갈 수 없다. 손은 이미 훈련 세션의 것이다.
+  const studyNav = document.querySelector('.navItem[data-view="study"]');
+  studyNav.disabled = trainingHeld();
+  studyNav.title = trainingHeld() ? "훈련 중에는 열 수 없습니다" : "";
 
   const modeBtn = el("modeBtn");
   if (teacher) {
@@ -2061,10 +2403,14 @@ function renderNav() {
 function showView(view) {
   const views = MODE_VIEWS[ui.mode];
   if (!(view in views)) return;
+  if (ui.mode === "learner" && view === "study" && trainingHeld()) { renderNav(); return; }
+  // 공부 세션은 공부 화면에서만 산다. 떠나면 닫는다 — 교사 모드로 갈 때도다.
+  if (!(ui.mode === "learner" && view === "study")) leaveStudy();
   ui.view[ui.mode] = view;
   for (const [name, id] of Object.entries(views)) { show(id, name === view); }
   renderNav();
   if (ui.mode === "learner" && view === "progress") { enterProgress(); }
+  if (ui.mode === "learner" && view === "study") { enterStudy(); }
   if (ui.mode === "teacher" && view === "confusion") { loadStats(); }
 }
 
@@ -2139,6 +2485,215 @@ function openMockhand() {
 }
 
 // ===================================================================== //
+// 공부 — 글자를 눌러 손으로 본다. 기록은 남지 않는다 (DECISIONS §56)
+// ===================================================================== //
+
+/**
+ * 공부는 훈련과 **다른 세션**이다 (`/api/study-sessions`). 락은 잡지만
+ * 채점·기록·난이도 코드가 서버에 아예 없다.
+ *
+ * 공부 세션은 이 화면이 보이는 동안만 산다. 다른 화면으로 가면 닫는다 —
+ * 공부하던 손을 쥔 채로 훈련을 시작하면 `LOCK_UNAVAILABLE` 로 막힌다.
+ *
+ * 혼동쌍 힌트는 **싣지 않았다** (§56). 깊이쌍이 어느 글자인지 학습자에게
+ * 알리지 않는다는 §52 의 결정과, 힌트가 나오는 자리를 오답 2회 뒤 시범으로
+ * 둔 기획서 5.2 를 따른다.
+ */
+const study = {
+  sessionId: null,
+  busy: false,
+};
+
+const REFERENCE_LABEL = { neutral: "중립", safe: "쉬는 자세" };
+
+function setStudyError(message) { el("studyError").textContent = message || ""; }
+
+/** 공부 화면에 들어올 때. 손이 잡혀 있으면 해제를 내놓는다 (§51). */
+async function enterStudy() {
+  if (!el("studyName").value.trim() && state.learnerName) {
+    el("studyName").value = state.learnerName;
+  }
+  if (study.sessionId) return;
+  try {
+    const open = await call("GET", "/api/sessions/open");
+    renderStudyRecovery(open.lock_holder !== null && open.lock_holder !== undefined);
+  } catch (err) {
+    console.warn("could not check the lock", err);
+  }
+}
+
+async function startStudy() {
+  setStudyError("");
+  const name = el("studyName").value.trim();
+  if (!name) { el("studyNote").textContent = "이름을 입력하세요."; return; }
+  let started;
+  try {
+    started = await call("POST", "/api/study-sessions", { learner_name: name });
+  } catch (err) {
+    el("studyNote").textContent = err.message;
+    if (err.code === "LOCK_UNAVAILABLE") renderStudyRecovery(true);
+    return;
+  }
+  study.sessionId = started.session_id;
+  state.letters = started.letters;
+  state.learnerName = name;
+  if (!el("name").value.trim()) el("name").value = name;
+  el("studyNote").textContent = "";
+  el("studyWho").textContent = name;
+  renderStudyRecovery(true);
+  renderStudyPads(started.letters, started.references);
+  show("studyStart", false);
+  show("studyPanel", true);
+  // 공부 중에는 훈련으로 가는 길이 이 세션을 닫는다. 교사 모드 문은 그대로다.
+  renderNav();
+}
+
+/** 글자 버튼. 목록은 서버가 준 것 그대로다 — 순서도 서버 것이다. */
+function renderStudyPads(letters, references) {
+  const pad = el("studyPad");
+  clear(pad);
+  for (const letter of letters) {
+    const button = add(pad, "button", null, letter);
+    button.type = "button";
+    button.addEventListener("click", () => showStudy({ letter }, letter));
+  }
+  const refs = el("studyRefPad");
+  clear(refs);
+  for (const name of references) {
+    const label = REFERENCE_LABEL[name] || name;
+    const button = add(refs, "button", "wide", label);
+    button.type = "button";
+    button.addEventListener("click", () => showStudy({ pose: name }, label));
+  }
+}
+
+/**
+ * 누른 동안에는 다른 버튼이 잠긴다. 서버도 막는다 — 게이트 ⑥ rate limit,
+ * ⑦ idle, 구동 슬롯. 화면이 잠그는 것은 누를 수 없는 것을 누르게 두지 않으려는
+ * 것일 뿐이고, 규칙은 서버에 있다.
+ */
+function setStudyBusy(busy) {
+  study.busy = busy;
+  for (const button of document.querySelectorAll("#studyPad button, #studyRefPad button")) {
+    button.disabled = busy;
+  }
+  el("studyEndBtn").disabled = busy;
+  el("studyStopBtn").hidden = !busy;
+  el("studyDot").classList.toggle("live", busy);
+}
+
+async function showStudy(body, label) {
+  if (study.busy || !study.sessionId) return;
+  setStudyError("");
+  setStudyBusy(true);
+  el("studyStatus").textContent = `표현 중 — ${label}`;
+  try {
+    await call("POST", `/api/study-sessions/${study.sessionId}/show`, body);
+    el("studyStatus").textContent = `${label} — 손을 보세요`;
+  } catch (err) {
+    if (err.code === "STOPPED") {
+      // 사람이 멈춘 것이다. 오류 자리에 쓰지 않는다 (§45).
+      el("studyStatus").textContent = "정지했습니다 — 다시 누르면 이어서 봅니다";
+    } else if (err.code === "LOCK_NOT_HELD") {
+      abandonStudy("공부가 끝났습니다. 로봇손을 다른 곳에서 가져갔습니다.");
+    } else {
+      el("studyStatus").textContent = "글자를 누르면 손이 그 자세를 만듭니다";
+      setStudyError(err.message);
+    }
+  } finally {
+    setStudyBusy(false);
+  }
+}
+
+async function stopStudyMotion() {
+  try {
+    await call("POST", "/api/device/stop");
+  } catch (err) {
+    setStudyError(err.message);
+  }
+}
+
+/** 공부를 마친다. 락을 놓는다. */
+async function endStudy() {
+  const id = study.sessionId;
+  if (!id) return;
+  try {
+    await call("POST", `/api/study-sessions/${id}/end`);
+  } catch (err) {
+    // 이미 끝났을 수 있다(해제·만료). 어느 쪽이든 이 화면은 더 쥐고 있지 않는다.
+    console.warn("could not end the study cleanly", err);
+  }
+  abandonStudy("");
+}
+
+/** 공부 세션을 버린다. 버리는 곳은 여기 하나다 (§51 과 같은 이유). */
+function abandonStudy(message) {
+  study.sessionId = null;
+  setStudyBusy(false);
+  el("studyWho").textContent = "";
+  el("studyStatus").textContent = "글자를 누르면 손이 그 자세를 만듭니다";
+  show("studyPanel", false);
+  show("studyStart", true);
+  el("studyNote").textContent = message || "";
+  renderStudyRecovery(false);
+  renderNav();
+}
+
+/** 다른 화면으로 갈 때. 공부 세션은 공부 화면에서만 산다. */
+function leaveStudy() {
+  if (study.sessionId) endStudy();
+}
+
+// ---- 공부 화면의 해제 — 훈련 화면과 같은 두 번 누르기 (§45) -------------
+
+let studyResetArmed = null;
+
+function renderStudyRecovery(lockHeld) {
+  show("studyRecoveryRow", Boolean(lockHeld));
+  if (!lockHeld) { disarmStudyReset(); el("studyResetNote").textContent = ""; }
+}
+
+function disarmStudyReset() {
+  if (studyResetArmed) { clearTimeout(studyResetArmed); studyResetArmed = null; }
+  el("studyResetBtn").classList.remove("armed");
+  el("studyResetBtn").textContent = RESET_LABEL;
+}
+
+async function resetFromStudy() {
+  if (!studyResetArmed) {
+    el("studyResetBtn").classList.add("armed");
+    el("studyResetBtn").textContent = "정말 끝냅니다 — 한 번 더";
+    el("studyResetNote").textContent =
+      "손을 쥐고 있는 세션이 중단됩니다. 답한 문항까지는 남습니다.";
+    studyResetArmed = setTimeout(() => {
+      disarmStudyReset();
+      el("studyResetNote").textContent = "";
+    }, 8000);
+    return;
+  }
+  clearTimeout(studyResetArmed);
+  studyResetArmed = null;
+  setStudyError("");
+  try {
+    const result = await call("POST", "/api/device/reset");
+    disarmStudyReset();
+    abandonStudy(result.ended_sessions.length
+      ? `세션 ${result.ended_sessions.join(", ")} 을 종료하고 손을 놓았습니다.`
+      : "잠긴 세션이 없습니다. 손을 안전 자세로 되돌렸습니다.");
+  } catch (err) {
+    disarmStudyReset();
+    el("studyResetNote").textContent = "";
+    setStudyError(err.message);
+  }
+}
+
+el("studyStartBtn").addEventListener("click", startStudy);
+el("studyName").addEventListener("keydown", (e) => { if (e.key === "Enter") startStudy(); });
+el("studyEndBtn").addEventListener("click", endStudy);
+el("studyStopBtn").addEventListener("click", stopStudyMotion);
+el("studyResetBtn").addEventListener("click", resetFromStudy);
+
+// ===================================================================== //
 // 내 진행 — 학습자용. 혼동 쌍·약점 쌍·틀린 글자는 싣지 않는다 (§52)
 // ===================================================================== //
 
@@ -2192,7 +2747,9 @@ async function loadProgress() {
 function renderProgress(progress) {
   el("progressWho").textContent = progress.learner_name;
   show("progressBody", true);
-  el("progressNote").textContent = progress.learner_id === null
+  // 공부만 한 학습자도 이름은 있다 (`learner_id` 가 있다). 기록이 있는지는
+  // 답한 세션 수로 본다 (§56).
+  el("progressNote").textContent = progress.sessions === 0
     ? "아직 기록이 없습니다. 첫 세션은 아래 난이도로 시작합니다."
     : "";
 
