@@ -9,6 +9,195 @@
 캡스톤 과제로 만들었다. 로봇손 하드웨어는 전기공학 전공이, 소프트웨어와 AI
 계층은 컴퓨터소프트웨어 전공이 맡았다. 이 저장소는 소프트웨어 쪽이다.
 
+하드웨어 없이 바로 돌려 보려면 [처음 돌려 보기](#처음-돌려-보기-mock)부터 따라 한다.
+
+---
+
+## 처음 돌려 보기 (Mock)
+
+하드웨어 없이 전 계층이 동작한다. Windows · PowerShell 기준이고, 명령은 전부
+저장소 루트에서 친다. Python 3.12 가 `py` 런처로 잡혀 있어야 한다.
+
+### 1. 복제와 설치
+
+```powershell
+git clone https://github.com/kwoo618/spellhand.git
+cd spellhand
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+**`.venv` 안의 인터프리터를 직접 호출한다.** 이 저장소의 모든 명령이 그 전제로
+적혀 있다. 전역 `python` 에는 의존성이 없다.
+
+의존성 파일이 두 개인 이유: `pyproject.toml` 은 **선언**(무엇이 필요한가),
+`requirements.txt` 는 `pip freeze` **고정본**(무슨 버전이 깔려 있는가)이다.
+
+### 2. `.env`
+
+Mock 으로만 돌릴 거면 **이 단계는 건너뛰어도 된다.** 파일이 없으면 기본값
+(`mock`, API 키 없음)으로 뜬다. 만들 때는 저장소 루트에 `.env` 로 둔다
+(커밋되지 않는다).
+
+```
+DEVICE_MODE=mock
+# 실기일 때만
+# SERIAL_PORT=COM3
+# 계획 생성에 LLM 을 쓸 때만. 없으면 규칙 폴백으로 계획이 나온다
+# ANTHROPIC_API_KEY=...
+```
+
+| 변수 | 값 | 기본 |
+|---|---|---|
+| `DEVICE_MODE` | `mock` \| `serial` | `mock` |
+| `SERIAL_PORT` | `COM3` 등. `serial` 일 때 **필수** | 없음 |
+| `SERIAL_BAUD` | 통신 속도 | `115200` |
+| `ANTHROPIC_API_KEY` | 계획 생성용. 없으면 규칙 폴백으로 동작 | 없음 |
+| `AGENT_MODEL` | 계획 생성 모델 | `claude-opus-5` |
+| `STATION_URL` | MCP 서버가 부를 스테이션 주소 | `http://127.0.0.1:8000` |
+
+**셸에서 준 값이 `.env` 보다 우선한다.** 파일을 고치지 않고 한 번만 다르게 띄울
+때는 `$env:DEVICE_MODE="mock"` 을 먼저 준다. `DEVICE_MODE` 를 알아볼 수 없으면
+경고를 남기고 `mock` 으로 뜬다.
+
+### 3. 기동
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn server.routes:app --port 8000
+```
+
+**기동 로그에서 모드를 먼저 확인한다.** 실기인지 Mock 인지는 이 줄로만 판단한다.
+
+```
+INFO server.env: no .env at ...\.env; using the environment as it is
+INFO server.device: device adapter: mock
+```
+
+`.env` 가 있으면 첫 줄이 `loaded ...\.env: applied [...]` 가 되고, 실기면 둘째 줄이
+`device adapter: serial on COM3 @ 115200 baud` 가 된다.
+
+브라우저로 <http://127.0.0.1:8000/> 을 연다 (`/station.html` 로 넘어간다).
+
+### 4. 학습자 모드 — 12문항 한 세션
+
+1. 처음 열면 학습자 모드다. 사이드바 **[훈련]** 에서 이름을 넣고 **[세션 시작]**
+2. 로봇손(Mock 에서는 보이지 않는다 — 6단계 참고)이 글자를 만들고 나면 입력칸이
+   열린다. 읽은 글자를 넣고 **[제출]** → 결과를 보고 **[다음 문항]**
+3. 판별 8문항 뒤 단어 4문항이 이어지고, 끝나면 트랙별 세션 요약이 나온다
+4. 사이드바 **[내 진행]** 에 이름을 넣고 **[보기]** 하면 트랙별 다음 세션 난이도,
+   깊이쌍 해금 진척도, 세션별 정확도가 나온다
+
+오답 1회면 같은 문항이 느리게 다시 나오고(정답은 알려주지 않는다), 2회면 헷갈린
+두 글자를 시범한 뒤 다음 문항으로 간다.
+
+### 5. 교사 모드로 전환
+
+사이드바 맨 아래의 작은 **[교사 모드]** 를 누른다. 주소로 바로 가려면
+<http://127.0.0.1:8000/station.html?mode=teacher>.
+
+**세션을 쥐고 있는 동안에는 열리지 않는다** ("세션 중에는 열 수 없습니다").
+세션을 끝내거나 손을 놓은 뒤 전환한다.
+
+### 6. Mock 손 — 새 창
+
+교사 모드 사이드바의 **[Mock 손 — 새 창]** 을 누르면 `mockhand.html` 이 따로
+열린다. 손가락별 flex 값이 실시간으로 보이고, 어느 자세인지는 브라우저가 flex 로
+되짚는다. 팝업이 막히면 주소창에 <http://127.0.0.1:8000/mockhand.html> 을 연다.
+
+Mock 에서 손 모양을 보며 풀어 보려면 **세션을 시작하기 전에** 이 창을 먼저 띄워
+둔다. 세션 중에는 교사 모드가 잠긴다.
+
+### 흔한 실패
+
+| 증상 | 원인과 처리 |
+|---|---|
+| 실기에서 기동이 포트 오류로 죽는다 | `--reload` 를 붙였다. 같은 시리얼 포트를 두 번 잡으려다 실패한다. **`--reload` 를 쓰지 않는다** |
+| 실기에서 포트를 열 수 없다 | 아두이노 IDE 의 시리얼 모니터(또는 다른 프로그램)가 COM 포트를 잡고 있다. 닫고 다시 띄운다 |
+| 실기를 띄웠는데 손이 안 움직인다 | 기동 로그가 `device adapter: mock` 이다. `DEVICE_MODE` 오타이거나 셸에 남은 `$env:DEVICE_MODE` 가 `.env` 를 덮었다 |
+| 8000 포트가 이미 쓰이고 있다 / COM 포트가 잡혀 있다 | 이전에 띄운 서버가 남아 있다. 아래 명령으로 찾아 정리한다 |
+| 세션 시작이 `LOCK_UNAVAILABLE` 로 막힌다 | 끝내지 않은 세션이 락을 쥐고 있다. 아래 "락 풀기" |
+
+남은 서버 프로세스 찾기와 정리. `.venv` 의 `python.exe` 는 실제 인터프리터를
+자식으로 띄우므로 **서버 하나가 두 줄로 보인다.** 둘 다 정리한다.
+
+```powershell
+Get-CimInstance Win32_Process -Filter "name='python.exe'" |
+  Where-Object CommandLine -match 'uvicorn' |
+  Select-Object ProcessId, CommandLine
+
+Stop-Process -Id <ProcessId>
+```
+
+`mcp_server.server` 로 뜬 프로세스는 Claude Desktop 이 띄운 것이다. 스테이션
+서버가 아니므로 건드리지 않는다.
+
+**락 풀기.** 한 번에 한 세션만 손을 쓸 수 있고, 락은 마지막 heartbeat 로부터
+60초 뒤에 만료된다. 세션을 끝내지 않고 탭을 닫으면 그동안 다음 시작이 막힌다.
+기다리지 않으려면 학습자 화면 아래의 **[세션 끝내고 손 놓기]** 를 누르거나
+(락이 잡혀 있을 때만 보이고, 진행 중인 세션이 끝나므로 8초 안에 두 번 눌러야
+실행된다):
+
+```powershell
+curl.exe -X POST http://127.0.0.1:8000/api/device/reset
+```
+
+이것은 진행 중인 세션을 `aborted` 로 닫고 락을 놓는다. 손만 멈추는
+`POST /api/device/stop`(비상 정지, 세션 유지)과 결과가 다르다.
+
+---
+
+## 화면 구성
+
+화면은 **`web/station.html` 한 장**이고, 그 안에 모드가 둘이다. Mock 손만 별도
+창이다.
+
+| | 사이드바 | 무엇을 하는가 |
+|---|---|---|
+| **학습자 모드** | 훈련 · 내 진행 | 세션을 돌리고, 자기 난이도·해금 진척·세션별 정확도를 본다 |
+| **교사 모드** | 계획 · 로그 · 혼동 행렬 | 계획을 만들고 승인·거부한다. MCP 호출 로그와 트랙별 혼동 행렬을 본다 |
+| `mockhand.html` (새 창) | — | Mock 손의 flex 시각화. 교사 모드에서만 연다 |
+
+**학습자 모드에는 혼동 쌍·약점 쌍이 없다.** "나는 V 와 W 를 헷갈린다" 를 알고
+풀면 V 가 나올 때마다 W 를 의심하며 보게 되어, 재려는 판별력 자체가 오염된다
+([DECISIONS §52](DECISIONS.md)). 세션 요약에서도 혼동 쌍 줄을 뺐고, 그것은 교사
+모드의 혼동 행렬에서 본다.
+
+교사 모드는 인증이 없다. 로컬 단일 사용자 도구라서다. 대신 문을 작게 두고,
+세션 중에는 잠근다.
+
+예전 주소 `/practice.html` · `/teacher.html` 은 각각 `/station.html` ·
+`/station.html?mode=teacher` 로 넘어간다. [PRD 14장](docs/개발_PRD_v2.1.md)은
+아직 두 페이지로 적고 있는데, 지금 기준은 이쪽이다.
+
+---
+
+## HITL 흐름 — 계획 → 승인 → 참여
+
+LLM 이 만든 계획은 사람이 승인해야 실행된다. 승인과 실행 사이에 **참여**라는
+단계가 하나 더 있다.
+
+1. **계획 생성.** 교사 모드 [계획 · 로그] 에서 학습자 이름, 자연어 요청, 문항
+   수를 넣고 [계획 생성]. 서버가 검증 10항목을 자동으로 돌리고 결과를 계획
+   옆에 붙인다. 이 단계는 세션도 만들지 않고 락도 잡지 않는다.
+   API 키가 없으면 규칙 폴백 계획이 나온다 — 흐름은 같다
+2. **승인.** [승인 — 세션 시작] 을 누르면 세션이 생기고 락이 잡힌다.
+   **이것만으로는 손이 움직이지 않는다.** 아직 아무도 그 세션에 들어가지 않았다
+3. **참여.** 학습자 모드로 돌아가면(또는 학습자 화면이 따로 열려 있으면) 시작
+   화면이 이름 입력 대신 참여 자리로 바뀐다. 화면은 `GET /api/sessions/open` 을
+   10초마다 묻고 거기서 승인된 세션을 찾는다. [시작] 을 누르면 **승인된 글자열
+   그대로** 손이 표현한다. 규칙이 문항을 새로 뽑는 경로로는 가지 않는다
+   ([DECISIONS §50](DECISIONS.md))
+
+**승인 후 60초 안에 참여해야 한다.** 승인은 락을 잡지만, 학습자가 [시작] 을
+누르기 전에는 heartbeat 를 보내는 쪽이 없다. 60초가 지나면 락이 만료되어 승인된
+세션이 사라지고 학습자 화면은 이름 입력으로 돌아간다. 그때는 계획을 다시 만들어
+승인한다. 코드로 고치지 않고 **"학습자가 화면 앞에 있는 상태에서 승인한다"** 는
+운영 절차로 막기로 했다 — 세 가지 해법이 모두 락 만료의 의미를 바꾸기
+때문이다 ([DECISIONS §50.5](DECISIONS.md)).
+
+참여 자리의 [나중에] 는 세션을 살려 둔 채 이름 입력으로 빠진다. 돌아오는 버튼
+("세션 N 으로 참여하기")이 그 세션이 살아 있는 동안 남는다.
+
 ---
 
 ## 왜 수용 훈련인가
@@ -123,7 +312,8 @@ clamp는 flex(0.0~1.0)와 각도 양쪽에 이중으로 걸고, 펌웨어도 한
 
 **4. HITL 승인 없이는 실행되지 않는다.** 계획 생성(`POST /api/agent/plan`)은
 세션도 만들지 않고 락도 잡지 않는다. 사람이 승인해야 세션이 생기고, 승인된 계획의
-문항만 `POST /api/sessions/{id}/planned` 로 나갈 수 있다.
+문항만 `POST /api/sessions/{id}/planned` 로 나갈 수 있다. 화면에서 어떻게
+이어지는지는 [HITL 흐름](#hitl-흐름--계획--승인--참여)에 있다.
 
 **5. 검증 10항목을 서버가 자동으로 돌린다.** 지원하지 않는 글자가 있으면 재생성
 (최대 2회), 그래도 안 되면 규칙 기반 폴백으로 내려간다. 범위 밖 유지 시간은
@@ -218,7 +408,7 @@ spellhand/
 │   └── calibration.h       ← 생성 산출물. 커밋하지 않는다
 ├── tools/gen_calibration.py  poses.json → calibration.h 생성 + --check
 ├── scripts/verify.ps1      완료 판정 — 테스트 + 각도 리터럴 검사 + 해시 대조
-└── tests/                  523개
+└── tests/                  576개
 ```
 
 ### `poses.json` 단일 출처
@@ -252,120 +442,59 @@ SHA-256 앞자리(`CAL_HASH`)가 박힌다.
 
 ---
 
-## 실행
-
-### 설치
-
-Python 3.12 기준이다. 저장소 루트에서:
-
-```powershell
-py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
-
-**`.venv` 안의 인터프리터를 직접 호출한다.** 이 저장소의 모든 명령이 그 전제로
-적혀 있다. `Activate.ps1` 로 활성화해도 되지만, 새 셸에서는 직접 호출이 안전하다.
-
-의존성 파일이 두 개인 이유: `pyproject.toml` 은 **선언**(무엇이 필요한가),
-`requirements.txt` 는 `pip freeze` **고정본**(무슨 버전이 깔려 있는가)이다.
-
-### Mock 으로 돌리기
-
-하드웨어 없이 전 계층이 동작한다. 이것이 기본 모드다.
-
-```powershell
-.\.venv\Scripts\python.exe -m uvicorn server.routes:app --port 8000
-```
-
-| 화면 | 주소 |
-|---|---|
-| 학습자 모드 | <http://127.0.0.1:8000/station.html> |
-| 교사 모드 | <http://127.0.0.1:8000/station.html?mode=teacher> |
-| Mock 손 | <http://127.0.0.1:8000/mockhand.html> |
-
-예전 주소 `/practice.html` · `/teacher.html` 은 각각 위 두 주소로 넘어간다.
-교사 모드는 사이드바 맨 아래 작은 링크로 들어가며, 세션 중에는 잠긴다.
-학습자 모드에는 혼동 쌍·약점 쌍이 나오지 않는다 (DECISIONS §52).
-
-학습자 모드에서 이름을 넣고 시작하면 판별 8문항 + 단어 4문항 세션이 돈다.
-"내 진행" 에서 트랙별 난이도·깊이쌍 해금 진척도·세션별 정확도를 본다.
-교사 모드의 [Mock 손 — 새 창] 으로 mockhand 를 띄우면 손가락 flex 값이 실시간으로
-보인다 — 어느 자세인지는 브라우저가 flex 로 되짚는다.
-
-**세션을 끝내지 않고 탭을 닫으면 다음 시작이 `LOCK_UNAVAILABLE` 로 막힌다.**
-한 번에 한 세션만 손을 쓸 수 있고, 락은 마지막 heartbeat 로부터 60초 뒤에
-만료된다. 기다리지 않으려면 학습자 화면 맨 아래의 **[세션 끝내고 손 놓기]** 를
-누르거나(진행 중인 세션이 날아가므로 두 번 눌러야 실행된다):
-
-```powershell
-curl.exe -X POST http://127.0.0.1:8000/api/device/reset
-```
-
-이것은 진행 중인 세션을 `aborted` 로 닫고 락을 놓는다. 손만 멈추는
-`POST /api/device/stop`(비상 정지, 세션 유지)과 결과가 다르다.
-
-**기동 로그에 어느 어댑터로 떴는지 남는다.** 실기인지 Mock 인지 헷갈리지 않으려면
-이 줄을 본다.
-
-```
-INFO server.env: loaded ...\.env: applied ['SERIAL_PORT'], kept existing ['DEVICE_MODE']
-INFO server.device: device adapter: mock
-```
-
-### 환경변수
-
-기동 시 저장소 루트의 `.env` 를 읽는다. 파일이 없으면 기본값으로 뜬다.
-`.env` 는 커밋되지 않는다.
-
-| 변수 | 값 | 기본 |
-|---|---|---|
-| `DEVICE_MODE` | `mock` \| `serial` | `mock` |
-| `SERIAL_PORT` | `COM3` 등. `serial` 일 때 **필수** | 없음 |
-| `SERIAL_BAUD` | 통신 속도 | `115200` |
-| `ANTHROPIC_API_KEY` | 계획 생성용. 없으면 규칙 폴백으로 동작 | 없음 |
-| `AGENT_MODEL` | 계획 생성 모델 | `claude-opus-5` |
-| `STATION_URL` | MCP 서버가 부를 스테이션 주소 | `http://127.0.0.1:8000` |
-
-**셸에서 준 값이 `.env` 보다 우선한다.** 파일을 고치지 않고 한 번만 다르게 띄울
-때 쓴다.
-
-```powershell
-$env:DEVICE_MODE="mock"
-.\.venv\Scripts\python.exe -m uvicorn server.routes:app --port 8000
-```
-
-`DEVICE_MODE` 를 알아볼 수 없으면 경고를 남기고 `mock` 으로 뜬다. 오타로 Mock 이
-뜬 것을 손 고장으로 오해하지 않도록 로그를 확인할 것.
-
-### 실기로 연결
+## 실기 연결
 
 > **전기팀 입회 없이 실기를 구동하지 않는다.** 저장소 규칙이다
-> ([CLAUDE.md](CLAUDE.md) 승인 항목).
+> ([CLAUDE.md](CLAUDE.md) 승인 항목). 캘리브레이션 헤더 생성과 펌웨어 업로드도
+> 승인 항목이다.
+
+보드는 **Arduino UNO R4 WiFi** 다. PRD 8행·18장 표에는 `Arduino Uno` 로 적혀
+있으나 실제 업로드·구동은 R4 WiFi 로 했다. 핀은 `poses.json` 에서 오고 펌웨어는
+보드 모델을 모르므로 코드는 그대로다.
+
+순서가 중요하다. **헤더 → 업로드 → 서버** 다.
 
 ```powershell
 # 1) poses.json 에서 펌웨어 헤더를 생성한다
 .\.venv\Scripts\python.exe tools\gen_calibration.py
 
-# 2) firmware/hand_controller 를 보드에 업로드 (Arduino IDE)
-
-# 3) 해시가 맞는지 먼저 확인한다
+# 2) 헤더가 poses.json 과 맞는지 확인한다 (보드와 통신하지 않는다)
 .\.venv\Scripts\python.exe tools\gen_calibration.py --check
+```
 
-# 4) serial 로 띄운다
-$env:DEVICE_MODE="serial"; $env:SERIAL_PORT="COM3"
+3) Arduino IDE 로 `firmware/hand_controller/hand_controller.ino` 를 연다. 보드는
+   `Arduino UNO R4 WiFi`(보드 매니저의 *Arduino UNO R4 Boards*), 포트는 COM3 등
+   실제 포트를 고르고 업로드한다. **업로드 뒤 시리얼 모니터를 닫는다.**
+
+4) `.env` 를 `DEVICE_MODE=serial`, `SERIAL_PORT=COM3` 으로 바꾸고(또는 셸에서
+   `$env:DEVICE_MODE="serial"; $env:SERIAL_PORT="COM3"`), Mock 과 같은 명령으로
+   띄운다. `--reload` 는 붙이지 않는다.
+
+```powershell
 .\.venv\Scripts\python.exe -m uvicorn server.routes:app --port 8000
 ```
 
-- 해시가 불일치하면 **서버가 뜨지 않는다.** 1~2단계를 다시 한다
-- **`--reload` 를 쓰지 않는다.** 파일이 바뀔 때마다 새 프로세스가 같은 포트를
-  열려다 실패한다
-- 포트가 다른 프로그램(아두이노 IDE 시리얼 모니터 등)에 잡혀 있으면 기동에
-  실패한다
-- 진단 뷰 헤더에 모드·해시·일치 여부가 한 줄로 나온다
+기동 로그가 `device adapter: serial on COM3 @ 115200 baud` 여야 한다.
 
-### Claude Desktop 연동
+**해시 핸드셰이크.** 서버는 시리얼 접속 직후 `H` 를 보내 펌웨어의 `CAL_HASH` 를
+받고, 자기가 `poses.json` 으로 계산한 값과 대조한다. **다르면 연결을 거부하고
+서버가 뜨지 않는다.** `poses.json` 을 고치고 재업로드를 잊은 경우가 이것이다.
+1~3단계를 다시 한다. 교사 모드 헤더의 스테이션 줄에 모드·해시·일치 여부가 나온다.
 
-스테이션 서버를 먼저 띄운 뒤, `%APPDATA%\Claude\claude_desktop_config.json` 에:
+Mock 으로 돌아갈 때는 `DEVICE_MODE=mock` 으로 되돌리고 서버를 다시 띄운다.
+셸에 `$env:DEVICE_MODE` 를 줬다면 그것이 `.env` 보다 우선하므로 그 셸을 닫거나
+값을 지운다.
+
+---
+
+## Claude Desktop 연동 (MCP)
+
+**스테이션 서버를 먼저 띄운다.** MCP 서버는 스테이션 REST 의 클라이언트일 뿐이라
+([DECISIONS §46](DECISIONS.md)), 서버가 떠 있지 않으면 모든 도구가
+`station_unreachable` 구조화 실패를 돌려준다.
+
+그다음 `%APPDATA%\Claude\claude_desktop_config.json` 의 `mcpServers` 에 추가하고
+Claude Desktop 을 다시 시작한다.
 
 ```json
 {
@@ -382,27 +511,33 @@ $env:DEVICE_MODE="serial"; $env:SERIAL_PORT="COM3"
 }
 ```
 
-경로는 실제 저장소 위치로 바꾼다. **`PYTHONPATH` 가 필수다** — Claude Desktop 은
-자기 작업 디렉터리로 프로세스를 띄우므로 이것이 없으면 모듈을 찾지 못한다.
+경로 두 곳은 실제 저장소 위치로 바꾼다.
 
-도구 목록만 먼저 확인하려면:
+**`PYTHONPATH` 가 필수다.** Claude Desktop 은 이 프로세스를 저장소가 아니라 자기
+작업 디렉터리에서 띄운다. `-m mcp_server.server` 는 현재 디렉터리 기준으로
+패키지를 찾으므로, 저장소 루트를 `PYTHONPATH` 로 주지 않으면 모듈을 찾지 못하고
+바로 죽는다.
+
+설정 전에 도구 목록만 확인하려면 (저장소 루트에서):
 
 ```powershell
 .\.venv\Scripts\python.exe -m mcp_server.server --list-tools
 ```
 
-스테이션 서버가 떠 있지 않으면 모든 도구가 `station_unreachable` 구조화 실패를
-돌려준다. 교사 모드를 열어 두면 Claude Desktop 의 도구 호출이 실시간으로
-지나가는 것이 보인다 — 차단된 호출은 사유와 함께 붉게 표시된다.
+교사 모드 [계획 · 로그] 를 열어 두면 Claude Desktop 의 도구 호출이 실시간으로
+지나간다. 차단된 호출은 사유와 함께 붉게 표시된다.
 
-### 테스트
+---
+
+## 테스트
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\verify.ps1
 ```
 
-세 가지를 한다: `pytest` 전체(523개), `server/` 안의 서보 각도 리터럴 검사(R1),
-`calibration.h` 해시 대조. 하나라도 실패하면 완료가 아니다.
+세 가지를 한다: `pytest` 전체(576개), `server/` 안의 서보 각도 리터럴 검사(R1),
+`calibration.h` 해시 대조. 하나라도 실패하면 완료가 아니다. 갓 복제한
+저장소에는 `calibration.h` 가 없으므로 해시 대조는 `skip` 으로 나온다.
 
 API를 호출하는 테스트는 기본 실행에서 건너뛴다. 실제 호출로 계획을 하나
 생성해 보려면:
@@ -455,8 +590,18 @@ flex는 부동소수점 파싱을 피하려고 **0~1000 정수(퍼밀)** 로 보
 
 ## 현재 상태와 한계
 
-소프트웨어는 완료 상태다. Mock 과 실기 양쪽에서 세션이 끝까지 돌고, MCP·에이전트·
-진단 뷰가 동작한다. 테스트 523개.
+1차 완료 기준(Mock 에서 판별 8 + 단어 4 세션 완주, 트랙별 요약)을 달성했다.
+실기(UNO R4 WiFi)에서도 세션이 끝까지 돌고, MCP·에이전트·HITL 승인과 참여·교사
+모드가 동작한다. 테스트 576개.
+
+화면 통합 뒤에 고친 것: 없는 이름이나 첫 세션 전 학습자의 통계·계획·문항 후보에
+다른 학습자의 기록이 섞이던 경로를 막았다
+([DECISIONS §53 · §54](DECISIONS.md)). 실데이터 수집은 참여자마다 새 이름으로
+시작하므로 그대로 두면 모든 첫 계획이 앞 참여자의 성적으로 만들어졌다.
+
+남은 일은 셋이고 **셋 다 사람을 모아야 하는 일이다.** 제3자 판별 파일럿 →
+실데이터 수집(10명 × 2세션, 최소 6명) → 시연 리허설. 코드에서 막혀 있는 것은
+없다.
 
 ### 아직 검증되지 않은 것
 
@@ -479,8 +624,17 @@ flex는 부동소수점 파싱을 피하려고 **0~1000 정수(퍼밀)** 로 보
 - **E의 약지 값 확인 대기.** `ring: 0.57` 이 실기에서 덜 접혀 보인다. 하드웨어팀
   회신을 기다린다. `poses.json` 수치는 하드웨어팀 확정값이라 임의로 바꾸지 않는다
 - 재캘리브레이션 주기, 30분 연속 구동 발열 — 하드웨어팀 확인 대기
+- **mockhand 에서 주먹 자세의 손가락이 겹쳐 그려진다.** 시각화만의 문제다.
+  서버가 보내는 flex 값과 실기 동작에는 영향이 없다
+- **승인 후 60초 안에 참여하지 않으면 승인된 세션이 사라진다.** 운영 절차로
+  막는다 (위 [HITL 흐름](#hitl-흐름--계획--승인--참여), [DECISIONS §50.5](DECISIONS.md))
 
 ### 구조적 한계
+
+**단일 학습자용 로컬 도구다.** 서버 하나가 손 하나를 쥐고, 한 번에 한 세션만
+돈다. 인증이 없고 교사 모드의 문턱은 "작게 둔 버튼 + 세션 중 잠금" 뿐이다.
+실습실 PC 한 대에서 쓰는 것을 전제로 하며, 네트워크에 열어 두는 구성은 고려하지
+않았다.
 
 장비 1대, 세션당 약 5분, 준비·정리 포함 인당 7~8분이다. 시간당 8명 내외가
 상한이므로 학급 전체 상시 훈련용이 아니다. **취약 학습자 집중 훈련과 정기 진단**
@@ -499,7 +653,7 @@ MCP·에이전트·안전 게이트는 그대로 쓴다. 그것이 이 설계의
 |---|---|
 | [기획서 v3](docs/지문자_학습_로봇손_기획서_v3.md) | 왜 이렇게 만드는지. 설계 의도, 한계, 검증 계획 |
 | [개발 PRD v2.1](docs/개발_PRD_v2.1.md) | 구현 사양. 절 번호로 참조한다 |
-| [DECISIONS.md](DECISIONS.md) | 설계 결정 48건. "무엇을 정했고 왜 그렇게 정했는가" |
+| [DECISIONS.md](DECISIONS.md) | 설계 결정 §1~§54. "무엇을 정했고 왜 그렇게 정했는가" |
 | [CLAUDE.md](CLAUDE.md) | 작업 규칙과 현재 상태 |
 | [하드웨어 측정 요청서](docs/하드웨어_측정_요청서.md) | 하드웨어팀 회신값의 출처 |
 
