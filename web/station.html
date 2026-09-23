@@ -28,6 +28,9 @@
     background: var(--paper);
     color: var(--ink);
     font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif;
+    /* 한국어는 어절 단위로 줄을 바꾼다. 기본값이면 "보/세요" 처럼 단어 가운데서
+       끊겨 읽기가 걸린다 (§57). 긴 코드 줄은 `.code` 가 따로 끊는다. */
+    word-break: keep-all;
   }
   [hidden] { display: none !important; }
 
@@ -186,7 +189,10 @@
   #learnerMode .result { margin-top: 2rem; padding-top: 1.25rem; border-top: 1px solid var(--line); }
   #learnerMode .result[hidden] { display: none; }
   #learnerMode .verdict { font-weight: 600; }
-  #learnerMode .reveal { font-size: 1.3rem; letter-spacing: 0.3em; margin: 0.5rem 0; }
+  #learnerMode .reveal { font-size: 1.3rem; margin: 0.5rem 0; }
+  #learnerMode .reveal .label { display: inline-block; min-width: 3.5rem; font-size: 1rem; color: var(--muted); }
+  #learnerMode .reveal .letters { letter-spacing: 0.3em; }
+  #learnerMode .reveal.mine { font-size: 1.1rem; color: var(--muted); }
   #learnerMode .hint { color: var(--muted); }
   #learnerMode .note { color: var(--muted); font-size: 0.9rem; }
 
@@ -194,6 +200,7 @@
   #learnerMode caption { text-align: left; font-weight: 600; padding-bottom: 0.4rem; }
   #learnerMode th, #learnerMode td { text-align: left; padding: 0.4rem 0.6rem 0.4rem 0; border-bottom: 1px solid var(--line); }
   #learnerMode th { color: var(--muted); font-weight: 400; }
+  #learnerMode #summaryTables th { width: 60%; }
   #learnerMode td { font-variant-numeric: tabular-nums; }
 
   #learnerMode .error { color: #8a2b2b; }
@@ -212,6 +219,29 @@
   }
   #learnerMode .recovery button.armed { color: #8a2b2b; text-decoration: none; font-weight: 600; }
   #learnerMode .recovery .note { display: inline; margin-left: 0.6rem; }
+
+  /* 안내 화면. 본문 글자보다 한 단계만 키운다 — 읽히면 된다. */
+  #learnerMode .lead { font-size: 1.1rem; margin: 0 0 1rem; }
+  #learnerMode .guide ol { margin: 0.5rem 0 1rem; padding-left: 1.3rem; }
+  #learnerMode .guide li { margin-bottom: 0.6rem; }
+
+  /* ---- 세 상태: 손이 움직이는 중 / 답할 차례 / 결과 (DECISIONS §57) -----
+     **색이 아니라 대비로 가른다.** 손이 움직이는 동안은 입력 쪽을 낮춰 화면이
+     조용해지고, 시선은 손으로 간다. 답할 차례에만 입력이 제 대비로 돌아온다.
+     전환은 즉시다 — transition 을 두지 않는다. 움직이는 화면은 시선을 끈다. */
+  #learnerMode .status .phase { color: var(--ink); font-weight: 600; flex: none; }
+  #learnerMode [data-phase="moving"] .answerArea,
+  #learnerMode [data-phase="checking"] .answerArea { opacity: 0.35; }
+  /* 결과에서는 입력 칸을 접는다. 결과와 [다음 문항] 이 화면 아래로 밀려나지
+     않게 한다. 내 답은 결과 안에 다시 적힌다. */
+  #learnerMode [data-phase="result"] .answerArea { display: none; }
+  #learnerMode [data-phase="answer"] .status,
+  #learnerMode [data-phase="paused"] .status { color: var(--ink); }
+  #learnerMode [data-phase="answer"] input[type="text"]:not(:disabled),
+  #learnerMode [data-phase="answer"] .composed { border-color: var(--accent); }
+  #learnerMode [data-phase="result"] .result { border-top: 2px solid var(--accent); }
+  #learnerMode [data-phase="result"] .verdict { font-size: 1.2rem; }
+  #learnerMode #studyPanel[data-phase="moving"] .pad { opacity: 0.35; }
 
   /* 글자 버튼 — 공부 화면과 훈련의 버튼·끌어 놓기 입력이 같이 쓴다.
      목록은 서버가 준다 (`/api/letters`). 디자인은 다음 작업이다 — 기존 버튼
@@ -382,6 +412,14 @@
   }
   #teacherMode .finding.removed .tag, #teacherMode .finding.regenerate .tag { color: var(--block); }
   #teacherMode .finding .detail { color: var(--muted); }
+  /* 둘째 줄: 코드와 서버 원문. 옮겨 적는 용도라 고정폭으로 작게 둔다 (§45). */
+  #teacherMode .finding .code {
+    margin: 0.1rem 0 0.35rem 5.5rem;
+    color: var(--muted);
+    font: 0.8rem/1.4 ui-monospace, Consolas, monospace;
+    overflow-wrap: anywhere;
+  }
+  #teacherMode .finding .letters { font-weight: 600; letter-spacing: 0.1em; }
 
   /* ---- 검증 결과 — 조치할 것과 참고만 할 것 -----------------------------
      교사가 손 쓸 수 있는 항목(제거·보정·경고)과 내부 추정치를 같은 크기로
@@ -463,8 +501,9 @@
 
     <!-- 학습자 모드의 화면들. 혼동 쌍·약점 쌍으로 가는 길은 여기 없다 (§52) -->
     <div class="navGroup" id="learnerNav">
+      <button class="navItem" type="button" data-view="home" aria-current="page">안내</button>
       <button class="navItem" type="button" data-view="study">공부</button>
-      <button class="navItem" type="button" data-view="train" aria-current="page">훈련</button>
+      <button class="navItem" type="button" data-view="train">훈련</button>
       <button class="navItem" type="button" data-view="progress">내 진행</button>
     </div>
 
@@ -490,6 +529,45 @@
   <!-- 학습자 모드                                                        -->
   <!-- ================================================================ -->
   <div id="learnerMode">
+    <!-- 안내 — 처음 여는 화면. 무엇을 하는 도구인지, 어떻게 진행되는지를 여기서
+         다 알 수 있게 한다. 길게 쓰지 않는다 — 읽고 바로 시작한다 (DECISIONS §57) -->
+    <main id="homeView">
+      <header>
+        <span class="learner">지문자 읽기 훈련</span>
+      </header>
+
+      <p class="lead">
+        로봇손이 영어 지문자를 만들면, 그것을 보고 어떤 글자인지 읽어 입력합니다.
+        손으로 만드는 법이 아니라 <strong>남의 손을 읽는 법</strong>을 훈련합니다.
+      </p>
+      <p>처음이라면 <strong>공부</strong>에서 글자를 하나씩 눌러 손 모양을 먼저 보세요.</p>
+
+      <div class="row">
+        <button class="primary" id="homeStudyBtn" type="button">공부부터</button>
+        <button id="homeTrainBtn" type="button">훈련 시작</button>
+      </div>
+      <!-- 참여할 세션이 열려 있으면 여기서도 알린다. 들어가는 곳은 훈련이다 -->
+      <p class="note" id="homeJoinNote" hidden></p>
+
+      <section class="block guide">
+        <h2>훈련은 이렇게 진행됩니다</h2>
+        <ol>
+          <li>손이 글자를 하나씩 만듭니다. <strong>그동안은 화면이 아니라 손을 보세요.</strong>
+            손이 멈추면 읽은 글자를 입력합니다.</li>
+          <li>글자와 글자 사이에 <strong>중립 자세</strong>가 지나갈 수 있습니다. 글자가 아니라
+            "여기서 글자가 바뀐다" 는 신호입니다. 익숙해지면 중립 없이 이어서 나옵니다.</li>
+          <li>틀리면 정답을 바로 알려 주지 않고 <strong>천천히 한 번 더</strong> 보여 줍니다.
+            또 틀리면 정답과 함께, 잘못 읽은 글자와 맞는 글자를 나란히 보여 줍니다.</li>
+          <li>답은 <strong>타자 · 버튼 · 끌어 놓기</strong> 중 하나로 넣습니다. 훈련을 시작할 때
+            고르고, 세션 중에는 바뀌지 않습니다.</li>
+        </ol>
+        <p class="note">
+          손을 멈추려면 손이 움직이는 동안 나타나는 [정지] 를 누르세요. 공부는 기록이
+          남지 않고, 훈련은 기록되어 다음 세션의 난이도가 됩니다.
+        </p>
+      </section>
+    </main>
+
     <!-- 공부 — 글자를 눌러 손으로 본다. 기록은 남지 않는다 (DECISIONS §56).
          글자 버튼은 서버가 준 목록으로 그린다. 여기 박지 않는다 -->
     <main id="studyView" hidden>
@@ -513,6 +591,7 @@
       <section id="studyPanel" hidden>
         <div class="status">
           <span class="dot" id="studyDot"></span>
+          <span class="phase" id="studyPhase">누를 차례</span>
           <span id="studyStatus">글자를 누르면 손이 그 자세를 만듭니다</span>
           <button class="stop" id="studyStopBtn" type="button" hidden>정지</button>
         </div>
@@ -543,9 +622,9 @@
     </main>
 
     <!-- 훈련 — practice.html 에서 옮겨 왔다. 흐름은 그대로다 -->
-    <main id="trainView">
+    <main id="trainView" hidden>
     <header>
-      <span class="learner" id="learner">—</span>
+      <span class="learner" id="learner">훈련</span>
       <span class="counter" id="counter"></span>
     </header>
 
@@ -586,13 +665,18 @@
     </section>
 
     <!-- 훈련 -->
-    <section id="trainPanel" hidden>
+    <!-- 세 상태 — 손이 움직이는 중 / 답할 차례 / 결과 — 를 `data-phase` 로 가른다.
+         색이 아니라 **대비**로 가른다: 손이 움직이는 동안은 화면 전체를 낮춰 시선을
+         손에 두고, 답할 차례에만 입력 칸이 제 대비로 돌아온다 (DECISIONS §57) -->
+    <section id="trainPanel" hidden data-phase="moving">
       <div class="status">
         <span class="dot" id="dot"></span>
+        <span class="phase" id="phase">손을 보세요</span>
         <span id="status">준비 중</span>
         <button class="stop" id="stopBtn" type="button" hidden>정지</button>
       </div>
 
+      <div class="answerArea">
       <label for="answer">읽은 글자</label>
       <input type="text" id="answer" autocomplete="off" autocapitalize="characters" spellcheck="false" disabled>
       <!-- 버튼·끌어 놓기 입력. 세션이 고른 방법 하나만 보인다. 버튼은 문항과
@@ -608,14 +692,20 @@
       <div class="row">
         <button class="primary" id="submitBtn" disabled>제출</button>
         <button id="replayBtn" disabled>다시 보기</button>
-        <button id="demoBtn" disabled>시범 다시 보기</button>
+      </div>
       </div>
 
       <div class="result" id="result" hidden>
         <p class="verdict" id="verdict"></p>
+        <!-- 정답과 내 답을 나란히. 결과에서는 입력 칸이 접히므로 내 답을 여기 다시 적는다 -->
         <p class="reveal" id="reveal"></p>
+        <p class="reveal mine" id="mine"></p>
         <p class="hint" id="hint"></p>
-        <div class="row"><button class="primary" id="nextBtn">다음 문항</button></div>
+        <div class="row">
+          <button class="primary" id="nextBtn">다음 문항</button>
+          <!-- 시범은 결과 뒤에만 나온다. 그래서 결과 옆에 둔다 -->
+          <button id="demoBtn" disabled>시범 다시 보기</button>
+        </div>
       </div>
     </section>
 
@@ -624,6 +714,7 @@
       <h2>세션 요약</h2>
       <p class="note">
         두 트랙은 훈련하는 기술이 다르므로 따로 봅니다. 합친 수치는 내지 않습니다.
+        한 번 틀려 다시 본 문항은 두 번 답한 것으로 셉니다.
       </p>
       <div id="summaryTables"></div>
       <div class="row"><button class="primary" id="againBtn">처음으로</button></div>
@@ -877,6 +968,7 @@ const REJECTION_TEXT = {
     "로봇손이 응답하지 않습니다. 선생님께 알려 주세요.",
   SESSION_FINISHED: () => "계획된 문항을 모두 마쳤습니다.",
   SESSION_STATE: () => "지금은 할 수 없는 동작입니다. 화면의 안내를 따라 주세요.",
+  NETWORK: () => "서버와 연결되지 않습니다. 잠시 뒤 다시 시도하고, 계속되면 선생님께 알려 주세요.",
 };
 
 const FALLBACK_TEXT =
@@ -885,6 +977,17 @@ const FALLBACK_TEXT =
 /** `['B','D']` 가 아니라 `B D`. 학습자가 읽는 것은 글자지 리스트가 아니다. */
 function letterList(values) {
   return (values || []).join(" ");
+}
+
+/**
+ * 학습자에게 보일 오류 문구. `call()` 이 만든 거부(코드가 있다)는 이미 학습자
+ * 문구다. 코드가 없으면 화면 코드 자체의 예외다 — 영어 원문을 그대로 내보내지
+ * 않는다. 원문은 콘솔에 남는다 (§57).
+ */
+function said(err) {
+  if (err && err.code) return err.message;
+  console.warn("unexpected error on the learner screen", err);
+  return FALLBACK_TEXT;
 }
 
 function learnerText(code, payload) {
@@ -910,11 +1013,21 @@ function rejection(payload, response) {
 }
 
 async function call(method, path, body) {
-  const response = await fetch(path, {
-    method,
-    headers: body ? { "Content-Type": "application/json" } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
+  let response;
+  try {
+    response = await fetch(path, {
+      method,
+      headers: body ? { "Content-Type": "application/json" } : undefined,
+      body: body ? JSON.stringify(body) : undefined,
+    });
+  } catch (err) {
+    // 서버에 닿지 못했다. 브라우저의 영어 문구("Failed to fetch")가 학습자
+    // 화면에 그대로 나가지 않게 여기서 옮긴다. 원문은 콘솔에 남는다 (§57).
+    console.warn("request did not reach the server", path, err);
+    const error = new Error(learnerText("NETWORK"));
+    error.code = "NETWORK";
+    throw error;
+  }
   const text = await response.text();
   // 서버가 구조화되지 않은 몸통을 낼 수도 있다 — 잡히지 않은 예외의 500 이
   // 그렇다. 여기서 `JSON.parse` 가 터지면 학습자에게 파서 오류가 그대로
@@ -1008,16 +1121,36 @@ function setAnswering(enabled) {
   el("submitBtn").disabled = !enabled;
   el("replayBtn").disabled = !enabled;
   setComposing(enabled);
+  if (enabled) setPhase("answer");
   if (enabled && state.inputMode === "typing") el("answer").focus();
 }
 
 /** 손이 움직이는 동안에만 정지 버튼을 보인다. */
 function setMoving(moving) {
   el("stopBtn").hidden = !moving;
+  if (moving) setPhase("moving");
+}
+
+/**
+ * 지금 무엇을 할 차례인가. 화면의 대비가 이것을 따른다 (DECISIONS §57).
+ * 문구는 상태 줄 앞머리 한 단어다 — 상세는 그 옆의 기존 상태 문구가 말한다.
+ */
+const PHASE_LABEL = {
+  moving: "손을 보세요",
+  answer: "답할 차례",
+  result: "결과",
+  paused: "멈춤",
+  checking: "확인 중",
+};
+
+function setPhase(phase) {
+  el("trainPanel").dataset.phase = phase;
+  el("phase").textContent = PHASE_LABEL[phase] || "";
 }
 
 /** 정지 직후의 표시. 문항은 그대로이므로 다시 보기로 이어 간다. */
 function showStopped() {
+  setPhase("paused");
   el("status").textContent = "정지했습니다 — [다시 보기] 로 이어서 봅니다";
   el("replayBtn").disabled = false;
 }
@@ -1030,6 +1163,7 @@ function showStopped() {
  * 오류 자리(`setError`)는 호출한 쪽이 이미 채웠으므로 건드리지 않는다.
  */
 function showStalled() {
+  setPhase("paused");
   el("status").textContent = "문항이 나가지 못했습니다 — [다시 보기] 로 다시 시도합니다";
   el("replayBtn").disabled = false;
 }
@@ -1267,6 +1401,12 @@ function renderOpenSession(open) {
   // 경로가 그것이다 — 세션 중에 다른 방법을 고르게 두지 않는다 (§56).
   renderInputChooser(joinable && !declined ? open.input_mode : null);
 
+  // 안내 화면에 있어도 참여할 세션을 놓치지 않게 한다. 승인된 세션인지 새로
+  // 고침 전의 내 세션인지는 여기서 모른다 — 참여 자리 문구처럼 중립으로 쓴다.
+  show("homeJoinNote", joinable && !declined);
+  el("homeJoinNote").textContent = joinable
+    ? "이어서 할 세션이 있습니다 — [훈련 시작] 에서 참여합니다." : "";
+
   if (!joinable) { el("joinNote").textContent = ""; return; }
 
   // 몇 문항짜리인지까지 적는다. 선생님이 승인한 그 세션인지 학습자가
@@ -1328,7 +1468,7 @@ function abandonSession(message) {
   setMoving(false);
   el("dot").classList.remove("live");
   el("counter").textContent = "";
-  el("learner").textContent = "—";
+  el("learner").textContent = "훈련";
   show("result", false);
   show("trainPanel", false);
   show("summaryPanel", false);
@@ -1411,7 +1551,7 @@ async function joinSession() {
     if (mode !== "typing") await loadLetters();
   } catch (err) {
     el("joinBtn").disabled = false;
-    setError(err.message);
+    setError(said(err));
     return;
   }
   stopOpenPoll();
@@ -1468,7 +1608,7 @@ async function startSession() {
     openSocket(session.session_id);
     await nextItem();
   } catch (err) {
-    el("startNote").textContent = err.message;
+    el("startNote").textContent = said(err);
   }
 }
 
@@ -1489,7 +1629,7 @@ async function nextItem() {
   } catch (err) {
     // 계획된 문항을 다 냈다면 요약으로 넘어간다.
     if (err.code === "SESSION_FINISHED") { return endSession(); }
-    setError(err.message);
+    setError(said(err));
     return;
   }
   renderCounter();
@@ -1532,7 +1672,7 @@ async function presentPlanned() {
       showStopped();
       return;
     }
-    setError(err.message);
+    setError(said(err));
     // 거부되어도 문항은 큐에 그대로 남는다. 다시 보기로 다시 시도할 수 있다.
     showStalled();
     return;
@@ -1561,21 +1701,29 @@ async function present() {
     await call("POST", `/api/sessions/${state.sessionId}/present`);
   } catch (err) {
     setMoving(false);
-    setError(err.message);
+    setError(said(err));
   }
 }
 
 async function submit() {
   setError("");
   const answer = currentAnswer();
+  state.lastAnswer = answer;
   if (!answer) return;
 
   setAnswering(false);
+  // 채점을 기다린다. 두 번째 시도에서 틀리면 서버가 **이 요청 안에서** 두 글자
+  // 시범을 손으로 보인다(수 초). 그동안 "답할 차례" 가 남아 있으면 손은 움직이는데
+  // 화면은 입력하라고 한다 — 실제로 그렇게 보였다 (§57).
+  setPhase("checking");
+  el("status").textContent = state.prompt && state.prompt.attempt > 1
+    ? "틀렸다면 손이 두 글자를 나란히 보여 줍니다 — 손을 보세요"
+    : "";
   let outcome;
   try {
     outcome = await call("POST", `/api/sessions/${state.sessionId}/answer`, { answer });
   } catch (err) {
-    setError(err.message);
+    setError(said(err));
     setAnswering(true);
     return;
   }
@@ -1599,9 +1747,20 @@ async function submit() {
   }
 }
 
+/** "정답  V Y W". 벌리는 것은 글자뿐이다 — 한국어 낱말까지 벌리면 "정 답" 이 된다. */
+function revealLine(id, label, letters) {
+  const node = el(id);
+  clear(node);
+  if (!letters) return;
+  add(node, "span", "label", label);
+  add(node, "span", "letters", letters.toUpperCase());
+}
+
 function renderResult(outcome) {
+  setPhase("result");
   el("verdict").textContent = RESULT_LABEL[outcome.result] || outcome.result;
-  el("reveal").textContent = outcome.expected ? `정답 ${outcome.expected}` : "";
+  revealLine("reveal", "정답", outcome.expected);
+  revealLine("mine", "내 답", state.lastAnswer);
   el("hint").textContent = outcome.demo && outcome.demo.hint ? outcome.demo.hint : "";
   state.demoAvailable = Boolean(outcome.demo);
   el("demoBtn").disabled = !state.demoAvailable;
@@ -1616,7 +1775,7 @@ async function replayDemo() {
     await call("POST", `/api/sessions/${state.sessionId}/demo`);
   } catch (err) {
     setMoving(false);
-    setError(err.message);
+    setError(said(err));
   }
 }
 
@@ -1625,7 +1784,7 @@ async function stopMotion() {
   try {
     await call("POST", "/api/device/stop");
   } catch (err) {
-    setError(err.message);
+    setError(said(err));
     return;
   }
   el("dot").classList.remove("live");
@@ -1638,7 +1797,7 @@ async function endSession() {
     const summary = await call("POST", `/api/sessions/${state.sessionId}/end`);
     renderSummary(summary);
   } catch (err) {
-    setError(err.message);
+    setError(said(err));
     return;
   }
   // 세션은 끝났고 락도 반납됐다. `session_id` 를 들고 있으면 heartbeat 가
@@ -1673,11 +1832,12 @@ function renderSummary(summary) {
   for (const [track, s] of Object.entries(summary.by_track)) {
     const table = document.createElement("table");
     const pct = (v) => (v === null ? "—" : `${Math.round(v * 100)}%`);
-    const ms = (v) => (v === null ? "—" : `${Math.round(v)}ms`);
+    // 학습자에게는 초로 보인다. ms 는 기록 단위지 읽는 단위가 아니다 (§57).
+    const ms = (v) => (v === null ? "—" : seconds(v));
 
     table.innerHTML = `
       <caption>${TRACK_LABEL[track] || track} 트랙</caption>
-      <tr><th>문항</th><td>${s.answered}</td></tr>
+      <tr><th>답한 횟수</th><td>${s.answered}</td></tr>
       <tr><th>정확도</th><td>${pct(s.accuracy)}</td></tr>
       <tr><th>순서 오류율</th><td>${pct(s.order_error_rate)}</td></tr>
       <tr><th>평균 응답</th><td>${ms(s.avg_response_ms)}</td></tr>
@@ -1733,7 +1893,7 @@ async function resetDevice() {
   } catch (err) {
     disarmReset();
     el("resetNote").textContent = "";
-    setError(err.message);
+    setError(said(err));
   }
 }
 
@@ -1790,8 +1950,38 @@ const BOUNDARY_LABEL = { explicit: "또박또박", direct: "연결" };
 // 교사가 손 쓸 수 없는 검사. 접어서 회색으로 내린다 — `estimated_seconds` 는
 // 모델의 추정과 스테이션 계산이 어긋난 것이고, 교사가 할 일이 없다.
 // **의도적으로 좁게 둔다.** 여기 넣는 것은 "읽지 않아도 된다" 고 단언하는
-// 것이므로, 확실한 것만 넣는다. 나머지 9항목은 전부 위에 그대로 나온다.
+// 것이므로, 확실한 것만 넣는다. 나머지는 전부 위에 그대로 나온다.
+// 어느 검사를 왜 여기 넣지 않았는지는 DECISIONS §57 에 있다.
 const INTERNAL_CHECKS = new Set(["estimated_seconds"]);
+
+/**
+ * 검사 코드 → 교사가 읽을 한 줄. **코드를 바꾸지 않고 앞에 덧붙인다.**
+ * 코드와 서버 원문은 그 아래 줄에 그대로 남는다 — 옮겨 적어야 할 때가
+ * 있다 (§45). 여기 없는 코드는 코드가 제목이 된다. 삼키지 않는다.
+ */
+const CHECK_TEXT = {
+  letters_in_poses: "이 손이 만들 수 없는 글자가 있었습니다",
+  word_in_pool: "단어 목록에 없는 단어입니다",
+  hold_ms_range: "유지 시간이 설정 범위를 벗어나 범위 안으로 맞췄습니다",
+  length_range: "글자 수가 허용 범위 밖입니다",
+  no_adjacent_repeat: "같은 글자가 연달아 나옵니다",
+  depth_pair_locked: "이 학습자에게 아직 열리지 않은 깊이쌍이 들어 있습니다",
+  heavy_letter_ratio: "한 글자가 판별 문항에 너무 자주 나옵니다",
+  weak_pairs_covered: "이 학습자의 약점 쌍이 한 판별 문항 안에 함께 나오지 않습니다",
+  recent_duplicate: "최근에 나간 문항과 같습니다",
+  estimated_seconds: "계획의 예상 시간이 스테이션 계산과 다릅니다",
+  track_valid: "트랙 값이 잘못됐습니다",
+  boundary_valid: "경계 값이 잘못됐습니다",
+  word_repeat_boundary: "같은 글자가 연달아 있는 단어라 또박또박으로 바꿨습니다",
+};
+
+// 조치할 것을 무엇이 일어났는가로 묶는다. 순서가 곧 읽는 순서다.
+const ACTION_GROUP = [
+  ["removed", "계획에서 뺀 문항"],
+  ["warning", "확인할 것"],
+  ["clamped", "고쳐서 남긴 것"],
+  ["regenerate", "다시 만든 것"],
+];
 
 const ACTION_LABEL = {
   removed: "제거",
@@ -1811,6 +2001,8 @@ const RECONNECT_MS = 2000;
 // 교사 모드의 상태. 학습자 모드의 `state` 와 섞지 않는다.
 const teacher = {
   plan: null,
+  // 마지막 계획의 모델 사용량 한 줄. 접힌 "내부 정보" 에 싣는다.
+  usage: "",
   track: "discrimination",
   logged: 0,
 };
@@ -2104,10 +2296,12 @@ function renderPlan(plan) {
     .filter(Boolean)
     .map((u) => `${u.model} 입력 ${u.input_tokens} · 출력 ${u.output_tokens}`)
     .join(" / ");
+  // 모델 사용량은 여기 싣지 않는다 — 교사가 조치할 것이 아니다. 아래 접힌
+  // "내부 정보" 에 그대로 있다 (§57).
   el("planMeta").textContent =
     `계획 ${plan.plan_id} · ${source} · 시도 ${(plan.attempts || []).length}회` +
-    ` · 예상 ${plan.estimated_seconds}초` +
-    (usage ? ` · ${usage}` : "");
+    ` · 예상 ${plan.estimated_seconds}초`;
+  teacher.usage = usage;
 
   el("planRationale").textContent = plan.rationale || "";
 
@@ -2125,13 +2319,16 @@ function renderPlan(plan) {
   renderFindings(plan.findings || []);
 }
 
-/** 검증 한 줄. 검사 이름은 서버 것 그대로 두고, 원문만 회색으로 내린다. */
+/**
+ * 검증 한 건. 첫 줄은 읽는 문장, 둘째 줄은 **코드와 서버 원문 그대로**다.
+ * 원문을 문장으로 바꿔치지 않는다 — 옮겨 적을 때는 둘째 줄을 쓴다 (§45).
+ */
 function findingLine(parent, finding) {
   const line = add(parent, "div", `finding ${finding.action}`);
   add(line, "span", "tag", ACTION_LABEL[finding.action] || finding.action);
-  add(line, "span", null,
-      `${finding.check}${finding.letters ? ` (${finding.letters})` : ""} — `);
-  add(line, "span", "detail", finding.detail);
+  add(line, "span", null, CHECK_TEXT[finding.check] || finding.check);
+  if (finding.letters) add(line, "span", "letters", ` ${finding.letters}`);
+  add(line, "div", "code", `${finding.check} — ${finding.detail}`);
   return line;
 }
 
@@ -2140,27 +2337,51 @@ function renderFindings(entries) {
   clear(findings);
 
   if (entries.length === 0) {
-    add(findings, "p", "note", "검증 10항목: 제거·보정·경고 없음.");
+    add(findings, "p", "note", "검증 결과 — 확인할 것 없음");
+    renderInternal(findings, []);
     return;
   }
-
-  add(findings, "p", "note", `검증 결과 ${entries.length}건`);
 
   const internal = entries.filter((f) => INTERNAL_CHECKS.has(f.check));
   const actionable = entries.filter((f) => !INTERNAL_CHECKS.has(f.check));
 
-  if (actionable.length) {
+  add(findings, "p", "note",
+      actionable.length
+        ? `검증 결과 — 확인할 것 ${actionable.length}건`
+        : "검증 결과 — 확인할 것 없음");
+
+  const grouped = new Set();
+  for (const [action, title] of ACTION_GROUP) {
+    const rows = actionable.filter((f) => f.action === action);
+    if (!rows.length) continue;
+    rows.forEach((f) => grouped.add(f));
     const group = add(findings, "div", "findingGroup");
-    add(group, "h3", null, "확인할 것");
-    actionable.forEach((finding) => findingLine(group, finding));
+    add(group, "h3", null, `${title} ${rows.length}건`);
+    rows.forEach((finding) => findingLine(group, finding));
+  }
+  // 모르는 action 이 오면 따로 묶는다. 삼키지 않는다.
+  const rest = actionable.filter((f) => !grouped.has(f));
+  if (rest.length) {
+    const group = add(findings, "div", "findingGroup");
+    add(group, "h3", null, `기타 ${rest.length}건`);
+    rest.forEach((finding) => findingLine(group, finding));
   }
 
-  if (internal.length) {
-    // 접어 둔다. 지우지는 않는다 — 펼치면 원문이 그대로 나온다.
-    const box = add(findings, "details", "internal");
-    add(box, "summary", null, `내부 검증 ${internal.length}건 — 조치할 것 없음`);
-    internal.forEach((finding) => findingLine(box, finding));
-  }
+  renderInternal(findings, internal);
+}
+
+/**
+ * 조치할 것이 없는 정보. 접어 둔다 — 지우지는 않는다. 펼치면 원문 그대로다.
+ * 모델 사용량도 여기 둔다. 비용 기록이지 교사의 판단 재료가 아니다.
+ */
+function renderInternal(parent, internal) {
+  const usage = teacher.usage;
+  if (!internal.length && !usage) return;
+  const box = add(parent, "details", "internal");
+  add(box, "summary", null,
+      `내부 정보${internal.length ? ` · 검증 ${internal.length}건` : ""} — 조치할 것 없음`);
+  internal.forEach((finding) => findingLine(box, finding));
+  if (usage) add(box, "div", "finding", `모델 사용량 — ${usage}`);
 }
 
 /** 승인 대기 상태가 화면에서 보여야 한다. 시연 ⑥ 의 "라이브 정지" 항목이다. */
@@ -2342,14 +2563,18 @@ el("statsRefresh").addEventListener("click", loadStats);
  * V 와 W 를 헷갈린다" 를 알고 문항을 풀면 순수 판별이 아니다.
  */
 const MODE_VIEWS = {
-  learner: { study: "studyView", train: "trainView", progress: "progressView" },
+  learner: {
+    home: "homeView", study: "studyView", train: "trainView", progress: "progressView",
+  },
   teacher: { plan: "teacherPlanView", confusion: "teacherConfusionView" },
 };
-const DEFAULT_VIEW = { learner: "train", teacher: "plan" };
+// 처음 여는 화면은 안내다. 무엇을 하는 도구인지 모르는 채로 세션 화면에
+// 떨어뜨리지 않는다 (§57).
+const DEFAULT_VIEW = { learner: "home", teacher: "plan" };
 
 const ui = {
   mode: "learner",
-  view: { learner: "train", teacher: "plan" },
+  view: { learner: "home", teacher: "plan" },
   // 교사 모드를 한 번이라도 열었는가. 로그 소켓은 그때 처음 붙는다.
   teacherStarted: false,
 };
@@ -2386,6 +2611,7 @@ function renderNav() {
   const studyNav = document.querySelector('.navItem[data-view="study"]');
   studyNav.disabled = trainingHeld();
   studyNav.title = trainingHeld() ? "훈련 중에는 열 수 없습니다" : "";
+  el("homeStudyBtn").disabled = trainingHeld();
 
   const modeBtn = el("modeBtn");
   if (teacher) {
@@ -2530,7 +2756,7 @@ async function startStudy() {
   try {
     started = await call("POST", "/api/study-sessions", { learner_name: name });
   } catch (err) {
-    el("studyNote").textContent = err.message;
+    el("studyNote").textContent = said(err);
     if (err.code === "LOCK_UNAVAILABLE") renderStudyRecovery(true);
     return;
   }
@@ -2574,6 +2800,8 @@ function renderStudyPads(letters, references) {
  */
 function setStudyBusy(busy) {
   study.busy = busy;
+  el("studyPanel").dataset.phase = busy ? "moving" : "ready";
+  el("studyPhase").textContent = busy ? "손을 보세요" : "누를 차례";
   for (const button of document.querySelectorAll("#studyPad button, #studyRefPad button")) {
     button.disabled = busy;
   }
@@ -2589,7 +2817,7 @@ async function showStudy(body, label) {
   el("studyStatus").textContent = `표현 중 — ${label}`;
   try {
     await call("POST", `/api/study-sessions/${study.sessionId}/show`, body);
-    el("studyStatus").textContent = `${label} — 손을 보세요`;
+    el("studyStatus").textContent = `지금 손이 ${label} 자세입니다`;
   } catch (err) {
     if (err.code === "STOPPED") {
       // 사람이 멈춘 것이다. 오류 자리에 쓰지 않는다 (§45).
@@ -2598,7 +2826,7 @@ async function showStudy(body, label) {
       abandonStudy("공부가 끝났습니다. 로봇손을 다른 곳에서 가져갔습니다.");
     } else {
       el("studyStatus").textContent = "글자를 누르면 손이 그 자세를 만듭니다";
-      setStudyError(err.message);
+      setStudyError(said(err));
     }
   } finally {
     setStudyBusy(false);
@@ -2609,7 +2837,7 @@ async function stopStudyMotion() {
   try {
     await call("POST", "/api/device/stop");
   } catch (err) {
-    setStudyError(err.message);
+    setStudyError(said(err));
   }
 }
 
@@ -2641,7 +2869,11 @@ function abandonStudy(message) {
 
 /** 다른 화면으로 갈 때. 공부 세션은 공부 화면에서만 산다. */
 function leaveStudy() {
-  if (study.sessionId) endStudy();
+  if (!study.sessionId) return;
+  // 공부가 손을 놓은 **뒤에** 락을 다시 본다. 그러지 않으면 훈련 화면이 방금
+  // 전까지 공부가 쥐고 있던 락을 보고 [세션 끝내고 손 놓기] 를 내놓는다 —
+  // 처음 쓰는 사람에게는 무언가 막힌 것으로 보인다 (§57).
+  endStudy().then(() => { if (ui.mode === "learner") checkOpenSession(); });
 }
 
 // ---- 공부 화면의 해제 — 훈련 화면과 같은 두 번 누르기 (§45) -------------
@@ -2683,11 +2915,13 @@ async function resetFromStudy() {
   } catch (err) {
     disarmStudyReset();
     el("studyResetNote").textContent = "";
-    setStudyError(err.message);
+    setStudyError(said(err));
   }
 }
 
 el("studyStartBtn").addEventListener("click", startStudy);
+el("homeStudyBtn").addEventListener("click", () => showView("study"));
+el("homeTrainBtn").addEventListener("click", () => showView("train"));
 el("studyName").addEventListener("keydown", (e) => { if (e.key === "Enter") startStudy(); });
 el("studyEndBtn").addEventListener("click", endStudy);
 el("studyStopBtn").addEventListener("click", stopStudyMotion);
@@ -2738,7 +2972,7 @@ async function loadProgress() {
     );
   } catch (err) {
     el("progressNote").textContent = "";
-    el("progressError").textContent = err.message;
+    el("progressError").textContent = said(err);
     return;
   }
   renderProgress(progress);
