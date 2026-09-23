@@ -481,6 +481,30 @@ def _parse_timing(raw: Mapping[str, Any]) -> Timing:
             values["hold_default_ms"],
             f"a value <= $.timing.hold_max_ms ({values['hold_max_ms']})",
         )
+    # 전이 시간은 보간 틱의 배수여야 한다. 배수가 아니면 Mock 은 반올림한 틱
+    # 수만큼, 펌웨어는 경과가 전이 시간을 넘긴 첫 틱에 RDY 를 내 두 어댑터의
+    # 도달 시각이 갈린다 (250 -> Mock 240, 펌웨어 260). 유지 시간은 양쪽 모두
+    # 틱과 무관하게 ms 그대로 기다리므로 hold_* 에는 걸지 않는다. approach_hold_ms
+    # 는 경유 두 값을 같은 규칙으로 두려고 함께 건다 (DECISIONS.md §55).
+    tick = values["interpolation_tick_ms"]
+    if tick <= 0:
+        raise _fail("$.timing.interpolation_tick_ms", tick, "a positive integer")
+    for name in (
+        "transition_ms",
+        "transition_slow_ms",
+        "approach_transition_ms",
+        "approach_hold_ms",
+    ):
+        value = values[name]
+        if value % tick:
+            lower = value - value % tick
+            raise _fail(
+                f"$.timing.{name}",
+                value,
+                f"a multiple of $.timing.interpolation_tick_ms ({tick}), "
+                f"such as {lower} or {lower + tick}",
+            )
+
     # 경유가 본 전이보다 느리면 경유 글자만 눈에 띄게 늦어진다. 학습자가 자세가
     # 아니라 타이밍으로 글자를 구별하게 된다 (DECISIONS.md §55).
     if values["approach_transition_ms"] >= values["transition_ms"]:

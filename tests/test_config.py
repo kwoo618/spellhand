@@ -596,9 +596,66 @@ def test_approach_keys_do_not_change_calibration_hash(raw, broken):
     def strip(data):
         for pose in data["poses"].values():
             pose.pop("approach", None)
-        data["timing"]["approach_transition_ms"] = 1
+        # 실제 값과 다르되 검증은 통과하는 값 (틱의 배수, 본 전이보다 짧다).
+        data["timing"]["approach_transition_ms"] = data["timing"]["interpolation_tick_ms"]
         data["timing"]["approach_hold_ms"] = 0
 
     assert calibration_hash(load_config(broken(strip))) == calibration_hash(
         load_config(REAL_CONFIG)
     )
+
+
+# --------------------------------------------------------------------------- #
+# 전이 시간은 보간 틱의 배수 (DECISIONS.md §55)
+# --------------------------------------------------------------------------- #
+
+def test_real_transition_times_are_tick_multiples(config):
+    tick = config.timing.interpolation_tick_ms
+    for name in (
+        "transition_ms",
+        "transition_slow_ms",
+        "approach_transition_ms",
+        "approach_hold_ms",
+    ):
+        assert getattr(config.timing, name) % tick == 0, name
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["transition_ms", "transition_slow_ms", "approach_transition_ms", "approach_hold_ms"],
+)
+def test_a_timing_off_the_tick_grid_is_rejected(broken, raw, name):
+    tick = raw["timing"]["interpolation_tick_ms"]
+    value = raw["timing"][name] - tick // 2  # 틱 사이. 다른 대소 검증은 그대로 통과한다
+
+    def mutate(data):
+        data["timing"][name] = value
+
+    with pytest.raises(ConfigError) as exc:
+        load_config(broken(mutate))
+    message = str(exc.value)
+    assert f"$.timing.{name}" in message
+    assert f"got {value}" in message
+    assert f"a multiple of $.timing.interpolation_tick_ms ({tick})" in message
+    lower = value - value % tick
+    assert f"such as {lower} or {lower + tick}" in message
+
+
+def test_hold_times_do_not_have_to_be_tick_multiples(broken, raw):
+    """유지는 양쪽 어댑터 모두 ms 그대로 기다린다. 틱에 묶을 이유가 없다."""
+    tick = raw["timing"]["interpolation_tick_ms"]
+
+    def mutate(data):
+        data["timing"]["hold_default_ms"] -= tick // 2
+
+    config = load_config(broken(mutate))
+    assert config.timing.hold_default_ms % tick != 0
+
+
+def test_a_zero_tick_is_rejected(broken):
+    def mutate(data):
+        data["timing"]["interpolation_tick_ms"] = 0
+
+    with pytest.raises(ConfigError) as exc:
+        load_config(broken(mutate))
+    assert "$.timing.interpolation_tick_ms" in str(exc.value)
