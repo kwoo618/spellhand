@@ -358,12 +358,7 @@ class SafetyGate:
         text = letters.upper()
 
         # ① 세션 락
-        holder = self._lock.holder()
-        if holder != session_id:
-            raise LockNotHeldError(
-                f"session {session_id} does not hold the device lock "
-                f"(holder={holder}); no motion is allowed without it"
-            )
+        self._require_holder(session_id)
 
         # ② 글자 존재
         unknown = sorted({c for c in text if c not in self._config.poses})
@@ -389,6 +384,40 @@ class SafetyGate:
         # ④ flex 조회·clamp / ⑤ 각도 변환·clamp — 경유 자세 포함
         steps = tuple(self._step_for(letter) for letter in text)
 
+        # ⑥ ⑦ 과 요청 수
+        self._admit(session_id)
+        return steps
+
+    def authorize_reference(self, session_id: int, name: str) -> Pose:
+        """중립·안전 자세 **하나**를 보여 주는 구동 요청 (공부 모드).
+
+        글자가 아니므로 ②③ 이 없다. 나머지 — ① 락, ④⑤ clamp, ⑥ rate limit,
+        요청 수, ⑦ idle — 는 글자와 같은 코드를 지난다. "모든 구동 요청은
+        예외 없이 이 경로를 통과한다" (PRD 10장) 를 지키려는 것이다.
+
+        `name` 이 무엇인지는 호출자가 가린다. 여기서는 설정에 있는 키만 받는다.
+        """
+        self._require_holder(session_id)
+        raw = {"neutral": self._config.neutral, "safe": self._config.safe}.get(name)
+        if raw is None:
+            raise CurriculumViolationError(
+                f"reference pose is {name!r}, expected 'neutral' or 'safe'"
+            )
+        pose = self._pose_from(name, raw)
+        self._admit(session_id)
+        return pose
+
+    def _require_holder(self, session_id: int) -> None:
+        """게이트 ①."""
+        holder = self._lock.holder()
+        if holder != session_id:
+            raise LockNotHeldError(
+                f"session {session_id} does not hold the device lock "
+                f"(holder={holder}); no motion is allowed without it"
+            )
+
+    def _admit(self, session_id: int) -> None:
+        """게이트 ⑥ · 요청 수 · ⑦. 통과하면 구동 1건으로 센다."""
         # ⑥ rate limit — 요청 단위
         now = self._clock()
         minimum = timedelta(milliseconds=self._config.timing.transition_ms)
@@ -419,7 +448,6 @@ class SafetyGate:
 
         self._last_request_at = now
         self._request_counts[session_id] = used + 1
-        return steps
 
     def _step_for(self, letter: str) -> PoseStep:
         approach = self._config.approach_of(letter)
@@ -430,7 +458,10 @@ class SafetyGate:
 
     def _pose_for(self, letter: str) -> Pose:
         """게이트 ④⑤. flex 를 자르고, 각도로 바꿔 보아 범위를 확인한다."""
-        raw = self._config.poses[letter]
+        return self._pose_from(letter, self._config.poses[letter])
+
+    def _pose_from(self, letter: str, raw) -> Pose:
+        """`_pose_for()` 의 본문. `letter` 는 경고에 쓰는 이름일 뿐이다."""
         clamped = {}
         blocked = []
         for finger, value in raw.items():

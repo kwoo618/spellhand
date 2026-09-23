@@ -87,6 +87,8 @@ __all__ = [
     "SessionError",
     "SessionStateError",
     "SessionFinishedError",
+    "INPUT_MODES",
+    "move_step",
 ]
 
 logger = logging.getLogger(__name__)
@@ -102,6 +104,12 @@ DIFFICULTY_LADDER: Tuple[Tuple[int, str], ...] = (
     (5, BOUNDARY_DIRECT),
     (7, BOUNDARY_DIRECT),
 )
+
+# 학습자가 답을 넣는 방법. 세션마다 하나이고 **첫 문항 전에만** 정한다 —
+# 세션 중에 바뀌면 그 세션의 응답 시간이 두 방법의 혼합이 된다.
+# 기록은 `sessions.plan_json` 에 남는다. 문항·답 어디에서도 복원되지 않는
+# 사실이라서다 (DECISIONS.md §56).
+INPUT_MODES = ("typing", "buttons", "drag")
 
 
 def starting_difficulty(
@@ -215,15 +223,18 @@ class SessionPlan:
 
     discrimination_items: int = 8
     word_items: int = 4
+    # 답을 넣는 방법 (`INPUT_MODES`). 정하지 않은 세션은 None 이고 plan_json 에
+    # 칸이 없다 — MCP·에이전트는 화면을 거치지 않으므로 방법이 없다.
+    input_mode: Optional[str] = None
 
     def as_json(self) -> str:
-        return json.dumps(
-            {
-                "discrimination_items": self.discrimination_items,
-                "word_items": self.word_items,
-            },
-            ensure_ascii=False,
-        )
+        body: Dict[str, object] = {
+            "discrimination_items": self.discrimination_items,
+            "word_items": self.word_items,
+        }
+        if self.input_mode is not None:
+            body["input_mode"] = self.input_mode
+        return json.dumps(body, ensure_ascii=False)
 
 
 @dataclass(frozen=True)
@@ -544,6 +555,8 @@ class SessionController:
             raise SessionStateError("this controller already ran a session")
 
         self._plan = plan or SessionPlan()
+        if self._plan.input_mode is not None:
+            _check_input_mode(self._plan.input_mode)
         session_id, learner_id = self._open_session(
             learner_name, self._plan, source
         )
@@ -586,6 +599,41 @@ class SessionController:
             else SessionState.AWAITING_ITEM
         )
         return session_id
+
+    @property
+    def input_mode(self) -> Optional[str]:
+        return self._plan.input_mode
+
+    def set_input_mode(self, mode: str) -> None:
+        """답을 넣는 방법을 정한다. **한 번만, 첫 문항 전에만** 된다.
+
+        승인된 세션은 선생님이 만들고 학습자가 나중에 참여하므로, 방법은 세션을
+        만들 때가 아니라 참여할 때 정해진다. 그래서 시작과 따로 둔다.
+
+        같은 값을 다시 주는 것은 받는다 — 화면을 새로 고쳐 다시 참여하는
+        경로다. 다른 값은 거부한다. 첫 문항이 나간 뒤에는 처음 정하는 것도
+        거부한다 — 이미 답한 문항이 어느 방법이었는지 알 수 없게 된다.
+        """
+        _check_input_mode(mode)
+        current = self._plan.input_mode
+        if current == mode:
+            return
+        if current is not None:
+            raise SessionStateError(
+                f"session {self.session_id} already answers by {current!r}; "
+                f"the input mode does not change during a session"
+            )
+        if self._seq > 0:
+            raise SessionStateError(
+                f"session {self.session_id} has already presented an item; "
+                f"the input mode is chosen before the first item"
+            )
+        self._plan = replace(self._plan, input_mode=mode)
+        with self._db.session() as db:
+            row = db.get(TrainingSession, self.session_id)
+            if row is not None:
+                row.plan_json = self._plan.as_json()
+                db.commit()
 
     def _restore_difficulty(self, learner_id: int, track: str) -> Difficulty:
         """이 학습자가 그 트랙에서 마지막에 있던 자리. 이력이 없으면 초기값."""
@@ -1108,18 +1156,7 @@ class SessionController:
         return presented_at, ready_at
 
     def _move_step(self, step: PoseStep, transition_ms: int, hold_ms: int) -> None:
-        """글자 하나의 동작. 경유가 있으면 경유 자세를 먼저 지난다.
-
-        P 명령을 두 번 보내는 것이 전부다. 펌웨어·어댑터는 경유를 모른다 (R2).
-        경유 시간은 느린 재생에서도 늘리지 않는다 — 보여 주는 자세가 아니라
-        텐던을 당기는 동작이다 (DECISIONS.md §55).
-        """
-        if step.approach is not None:
-            timing = self._config.timing
-            self._device.move_to(
-                step.approach, timing.approach_transition_ms, timing.approach_hold_ms
-            )
-        self._device.move_to(step.pose, transition_ms, hold_ms)
+        move_step(self._device, self._config, step, transition_ms, hold_ms)
 
     def _demo_pair(
         self, session_id: int, track: str, judgement: judge_module.Judgement
@@ -1300,6 +1337,37 @@ class SessionRunner:
                 logger.exception("could not close the session cleanly")
             raise
         return controller.end(status="done")
+
+def _check_input_mode(mode: str) -> None:
+    if mode not in INPUT_MODES:
+        raise SessionStateError(
+            f"input_mode is {mode!r}, expected one of {list(INPUT_MODES)}"
+        )
+
+
+def move_step(
+    device: DeviceAdapter,
+    config: Config,
+    step: PoseStep,
+    transition_ms: int,
+    hold_ms: int,
+) -> None:
+    """글자 하나의 동작. 경유가 있으면 경유 자세를 먼저 지난다.
+
+    P 명령을 두 번 보내는 것이 전부다. 펌웨어·어댑터는 경유를 모른다 (R2).
+    경유 시간은 느린 재생에서도 늘리지 않는다 — 보여 주는 자세가 아니라
+    텐던을 당기는 동작이다 (DECISIONS.md §55).
+
+    세션과 공부 모드(`server/study.py`)가 **같은 함수**를 부른다. 공부 모드에서만
+    경유를 건너뛰면 공부에서 본 E 와 훈련에서 본 E 가 다른 자세가 된다.
+    """
+    if step.approach is not None:
+        timing = config.timing
+        device.move_to(
+            step.approach, timing.approach_transition_ms, timing.approach_hold_ms
+        )
+    device.move_to(step.pose, transition_ms, hold_ms)
+
 
 def _outcome(
     seq: int,

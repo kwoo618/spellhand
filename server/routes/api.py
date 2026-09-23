@@ -47,6 +47,7 @@ from server.session import (
     SessionStateError,
     starting_difficulty,
 )
+from server.study import letters_payload
 from server.stats import (
     TrackSummary,
     accuracy_by_hold_ms,
@@ -199,11 +200,15 @@ def start_session(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
     if not learner_name:
         raise SessionStateError("learner_name is required")
 
+    input_mode = body.get("input_mode")
     plan = SessionPlan(
         discrimination_items=int(
             body.get("discrimination_items", SessionPlan().discrimination_items)
         ),
         word_items=int(body.get("word_items", SessionPlan().word_items)),
+        # 화면이 고른 입력 방법. 주지 않으면 칸이 없다 — MCP·에이전트는
+        # 화면을 거치지 않는다 (DECISIONS.md §56).
+        input_mode=None if input_mode is None else str(input_mode),
     )
     controller = station.new_controller()
     session_id = controller.start(
@@ -215,7 +220,23 @@ def start_session(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[st
         "learner_id": controller.learner_id,
         "total_items": controller.total_items,
         "state": controller.state,
+        "input_mode": controller.input_mode,
     }
+
+
+@router.post("/sessions/{session_id}/input-mode")
+def set_input_mode(
+    request: Request, session_id: int, body: Dict[str, Any] = Body(...)
+) -> Dict[str, Any]:
+    """답을 넣는 방법을 정한다. **첫 문항 전에 한 번만** 된다 (DECISIONS.md §56).
+
+    승인된 세션은 선생님이 만들고 학습자가 참여할 때 방법을 고른다. 그래서
+    `POST /sessions` 와 따로 둔다. 세션 중에 다른 값으로 바꾸려 하면
+    `SESSION_STATE` 로 거부된다 — 응답 시간이 두 방법의 혼합이 된다.
+    """
+    controller = _controller(request, session_id)
+    controller.set_input_mode(str(body.get("input_mode") or ""))
+    return {"session_id": session_id, "input_mode": controller.input_mode}
 
 
 @router.get("/sessions/open")
@@ -265,6 +286,8 @@ def open_session(request: Request) -> Dict[str, Any]:
         "state": controller.state,
         # 계획에서 온 세션인가. 화면은 이 칸으로 구동 경로를 고른다.
         "planned": False,
+        # 이미 정해졌으면 화면은 이것을 따른다. 다시 고르게 하지 않는다 (§56).
+        "input_mode": controller.input_mode,
     }
     try:
         stored = station.plans.for_session(controller.session_id)
@@ -470,6 +493,83 @@ def end_session(request: Request, session_id: int) -> Dict[str, Any]:
     # 끝난 세션으로는 계획을 더 집행할 수 없다.
     station.plans.forget_session(session_id)
     return _summary_payload(summary)
+
+
+# --------------------------------------------------------------------------- #
+# 글자 목록 · 공부 모드 (DECISIONS.md §56)
+# --------------------------------------------------------------------------- #
+
+@router.get("/letters")
+def letters(request: Request) -> Dict[str, Any]:
+    """화면의 글자 버튼. `poses.json` 에서 읽는다 — 화면은 글자를 모른다.
+
+    **세션을 받지 않는다.** 훈련의 버튼·드래그 입력도 이 목록을 쓴다. 문항과
+    무관하게 늘 같은 목록이므로 버튼에서 정답이 새지 않는다.
+    `/capabilities` 를 쓰지 않는 것은 저쪽이 혼동쌍·힌트를 싣기 때문이다 —
+    학습자 모드가 부르는 창구에는 처음부터 담지 않는다 (§52).
+    """
+    return letters_payload(_station(request).config)
+
+
+def _study(request: Request, session_id: int):
+    study = _station(request).studies.get(session_id)
+    if study is None:
+        raise SessionStateError(
+            f"study {session_id} is not running on this server"
+        )
+    return study
+
+
+@router.post("/study-sessions", status_code=201)
+def start_study(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+    """공부를 시작한다. 락을 잡는다 — 손을 움직이기 때문이다.
+
+    훈련 세션과 **다른 컨트롤러**다. 채점·기록·적응 코드가 아예 없다.
+    다른 세션이 손을 쥐고 있으면 `LOCK_UNAVAILABLE` 이다.
+    """
+    station = _station(request)
+    learner_name = str(body.get("learner_name") or "").strip()
+    if not learner_name:
+        raise SessionStateError("learner_name is required")
+    study = station.new_study()
+    session_id = study.start(learner_name)
+    station.studies[session_id] = study
+    return {"session_id": session_id, **letters_payload(station.config)}
+
+
+@router.post("/study-sessions/{session_id}/show")
+def study_show(
+    request: Request, session_id: int, body: Dict[str, Any] = Body(...)
+) -> Dict[str, Any]:
+    """글자(`letter`) 또는 중립·안전(`pose`) 하나를 보여 준다. **동기다.**
+
+    손이 끝나야 돌아온다. 그동안 다른 버튼은 게이트 ⑥⑦ 과 구동 슬롯에
+    걸린다. 정지는 `/device/stop` 이고 `STOPPED` 409 로 돌아온다 (§50.3).
+    """
+    station = _station(request)
+    _require_lock(station, session_id)
+    study = _study(request, session_id)
+    if body.get("pose") is not None:
+        shown, hold_ms = study.show_reference(str(body.get("pose")))
+        return {"status": "shown", "pose": shown, "hold_ms": hold_ms}
+    shown, hold_ms = study.show_letter(str(body.get("letter") or ""))
+    return {"status": "shown", "letter": shown, "hold_ms": hold_ms}
+
+
+@router.post("/study-sessions/{session_id}/heartbeat")
+def study_heartbeat(request: Request, session_id: int) -> Dict[str, Any]:
+    _study(request, session_id).heartbeat()
+    return {"status": "alive"}
+
+
+@router.post("/study-sessions/{session_id}/end")
+def end_study(request: Request, session_id: int) -> Dict[str, Any]:
+    """공부를 마친다. 락을 놓는다. 요약은 없다 — 기록이 없기 때문이다."""
+    station = _station(request)
+    study = _study(request, session_id)
+    study.end()
+    station.studies.pop(session_id, None)
+    return {"status": "ended", "session_id": session_id}
 
 
 # --------------------------------------------------------------------------- #

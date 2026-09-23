@@ -59,6 +59,7 @@ from server.routes.api import router as api_router
 from server.routes.events import MCP_LOG_CHANNEL, EventHub
 from server.safety import SafetyError, SafetyGate, SessionLock
 from server.session import SessionController, SessionError
+from server.study import StudyController
 
 __all__ = ["Station", "create_app", "app"]
 
@@ -111,6 +112,9 @@ class Station:
     agent: PlanAgent
     plans: PlanStore
     controllers: Dict[int, SessionController] = field(default_factory=dict)
+    # 공부 세션 (DECISIONS.md §56). 훈련 컨트롤러와 **다른 표**다 — 참여 조회
+    # (`/sessions/open`)가 공부를 훈련 세션으로 내주지 않게 한다.
+    studies: Dict[int, StudyController] = field(default_factory=dict)
 
     def new_controller(self) -> SessionController:
         """세션 하나를 위한 컨트롤러. 이벤트는 허브로 흘린다."""
@@ -135,6 +139,16 @@ class Station:
         )
         controller_ref["it"] = controller
         return controller
+
+    def new_study(self) -> StudyController:
+        return StudyController(
+            self.config,
+            self.database,
+            self.device,
+            self.gate,
+            self.lock,
+            clock=self.clock,
+        )
 
     def run_in_background(self, session_id: int, work: Callable[[], object]) -> None:
         """디바이스 동작을 백그라운드로 돌린다.
@@ -208,6 +222,9 @@ class Station:
         학습자가 시작조차 못 한다.
         """
         controller = self.controllers.pop(session_id, None)
+        if controller is None:
+            # 공부 세션도 같은 길로 접는다. `end(status=...)` 모양이 같다.
+            controller = self.studies.pop(session_id, None)
         try:
             if controller is not None:
                 controller.end(status="aborted")
@@ -235,7 +252,7 @@ class Station:
         except Exception:  # noqa: BLE001 - 멈추지 못해도 락은 풀어야 한다
             logger.exception("the device did not accept the stop during reset")
 
-        targets = list(self.controllers)
+        targets = list(self.controllers) + list(self.studies)
         holder = self.lock.holder()
         if holder is not None and holder not in targets:
             # 컨트롤러는 사라졌는데 락만 남은 경우. 락만 놓는다.
