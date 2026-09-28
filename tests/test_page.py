@@ -293,8 +293,16 @@ def test_the_outlined_title_keeps_the_hangul_counters_open(client):
 
 
 def test_switching_screens_does_not_shift_the_bars(client):
-    """스크롤바가 생기고 없어질 때 머리 줄·탭 줄이 좌우로 밀리지 않는다."""
-    assert "scrollbar-gutter: stable" in _style(_page(client))
+    """스크롤바가 생기고 없어질 때 머리 줄·탭 줄이 좌우로 밀리지 않는다 — 스크롤바를 늘
+    둔다. 자리만 비워 두는 `scrollbar-gutter` 는 스크롤 없는 화면에서 그 빈 자리가 밝은
+    바탕으로 칠해져 어두운 화면 옆에 흰 띠가 섰다 (§58.4). 어두운 동안에는 스크롤바도
+    어둡다."""
+    style = _style(_page(client))
+    assert "html { overflow-y: scroll; }" in style
+    assert "scrollbar-gutter" not in style
+    rules = _rules(style)
+    assert any(sel.strip().startswith("html:has(") and '[data-phase="moving"]' in sel
+               and "color-scheme: dark" in decl for sel, decl in rules)
 
 
 def test_the_letter_screen_cards_share_one_grid(client):

@@ -99,8 +99,10 @@
     word-break: keep-all;
   }
   [hidden] { display: none !important; }
-  /* 스크롤바가 생기고 없어질 때 머리 줄·탭 줄이 좌우로 밀리지 않게 자리를 둔다 (§58.2). */
-  html { scrollbar-gutter: stable; }
+  /* 스크롤바가 생기고 없어질 때 머리 줄·탭 줄이 좌우로 밀리지 않게 스크롤바를 늘 둔다.
+     `scrollbar-gutter: stable` 로 자리만 비워 두면 스크롤이 없는 화면에서 그 빈 자리가
+     밝은 바탕으로 칠해져, 어두운 화면 오른쪽에 흰 띠가 섰다 (§58.2 → §58.4). */
+  html { overflow-y: scroll; }
 
   .shell { min-height: 100vh; display: flex; flex-direction: column; }
 
@@ -320,7 +322,8 @@
      자리에서 시작한다 — 첫 열 폭을 같이 둔다 (§58.2). */
   #learnerMode :is(#progressTotals, #progressDifficulty, #depthTable) { table-layout: fixed; }
   #learnerMode :is(#progressTotals, #progressDifficulty, #depthTable) tr > :first-child { width: 35%; }
-  #learnerMode #summaryTables table + table { margin-top: var(--sp-6); }
+  /* 트랙별 표가 이어질 때의 간격. 요약과 내 진행의 추이가 같은 모양이다 (§58.4). */
+  #learnerMode :is(#summaryTables, #progressTrend) table + table { margin-top: var(--sp-6); }
 
   /* 복구 수단. 학습 흐름의 일부가 아니므로 맨 아래 작은 밑줄 글자다.
      멈추기(노란 버튼)와 모양이 달라야 한다 — 결과가 다른 두 기능이 같아
@@ -468,6 +471,10 @@
      §57 의 "차례를 따르는 대비" 를 이 디자인에서 구현한 형태다. 보이는 공부·
      훈련 패널이 `data-phase="moving"` 이면 본문을 밤색으로 채우고 상태 하나만
      남긴다. 탭 줄의 비활성 항목도 회색으로 내린다. 전환은 즉시다. */
+  /* 늘 있는 스크롤바도 어두운 화면에서는 어둡게 — 밝은 막대가 남지 않게 (§58.4). */
+  html:has(#learnerMode:not([hidden]) > main:not([hidden]) > [data-phase="moving"]:not([hidden])) {
+    color-scheme: dark;
+  }
   .shell:has(#learnerMode:not([hidden]) > main:not([hidden]) > [data-phase="moving"]:not([hidden])) .content,
   #learnerMode > main:has(> [data-phase="moving"]:not([hidden])) {
     background: var(--night);
@@ -662,6 +669,8 @@
   #learnerMode .block { margin-top: var(--sp-12); }
   #learnerMode .block h2 { margin: 0 0 var(--sp-1); font: 900 1.15rem var(--sans); color: var(--text); }
   #learnerMode .block p { margin: var(--sp-1) 0; }
+  /* 제목·설명 아래의 카드 묶음. 설명 글자가 카드 윗선에 붙어 있었다 (§58.4). */
+  #learnerMode .block .cards { margin-top: var(--sp-4); }
   #learnerMode .card.block { margin-top: var(--sp-6); }
 
   /* ==== 교사 모드 ========================================================
