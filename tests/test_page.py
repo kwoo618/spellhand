@@ -278,3 +278,28 @@ def test_a_replayed_demo_returns_to_the_result(client):
     # 결과가 없는 동안에는 되돌아갈 곳이 없다 — 새 문항·새 제출에서 비운다.
     assert "state.resultLine = null;" in _function(body, "nextItem")
     assert "state.resultLine = null;" in _function(body, "submit")
+
+
+# --------------------------------------------------------------------------- #
+# 마감 점검에서 고친 것 (§58.2)
+# --------------------------------------------------------------------------- #
+
+def test_the_outlined_title_keeps_the_hangul_counters_open(client):
+    """외곽선이 두꺼우면 검은고딕의 속공간(ㅇ·ㅁ)이 막힌다. 7px 에서 막혔다."""
+    style = _style(_page(client))
+    width = int(re.search(r"-webkit-text-stroke: (\d+)px", style).group(1))
+    assert width <= 4, width
+    assert "paint-order: stroke fill" in style
+
+
+def test_switching_screens_does_not_shift_the_bars(client):
+    """스크롤바가 생기고 없어질 때 머리 줄·탭 줄이 좌우로 밀리지 않는다."""
+    assert "scrollbar-gutter: stable" in _style(_page(client))
+
+
+def test_the_letter_screen_cards_share_one_grid(client):
+    """글자가 아닌 자세 카드도 글자 카드와 같은 6열 격자에 두 칸씩 앉는다.
+    끝 안내 칸은 기본 여백 없이 이웃 카드와 높이가 같다."""
+    rules = _rules(_style(_page(client)))
+    assert any(".poses .lcard" in sel and "grid-column: span 2" in decl for sel, decl in rules)
+    assert any(".lcard.end" in sel and "margin: 0" in decl for sel, decl in rules)

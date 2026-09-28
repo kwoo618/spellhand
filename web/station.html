@@ -89,6 +89,8 @@
     word-break: keep-all;
   }
   [hidden] { display: none !important; }
+  /* 스크롤바가 생기고 없어질 때 머리 줄·탭 줄이 좌우로 밀리지 않게 자리를 둔다 (§58.2). */
+  html { scrollbar-gutter: stable; }
 
   .shell { min-height: 100vh; display: flex; flex-direction: column; }
 
@@ -219,6 +221,11 @@
   #learnerMode .viewHead h2 { margin: 0; font: 400 2rem/1.2 var(--display); color: var(--text); }
   #learnerMode .counter { color: var(--text-2); font-weight: 700; font-variant-numeric: tabular-nums; }
 
+  /* 카드의 첫·끝 요소 여백과 비어 있는 안내·오류 줄이 안쪽 여백을 위아래로
+     다르게 만들었다 (§58.2). */
+  #learnerMode .card > :first-child { margin-top: 0; }
+  #learnerMode .card > :last-child { margin-bottom: 0; }
+  #learnerMode .note:empty { display: none; }
   #learnerMode .card {
     background: #fff;
     border: 2px solid var(--letter-line);
@@ -295,6 +302,10 @@
   #learnerMode th { color: var(--text-3); font-weight: 500; }
   #learnerMode td { font-weight: 700; font-variant-numeric: tabular-nums; }
   #learnerMode #summaryTables th { width: 60%; }
+  /* 내 진행의 표는 카드마다 쌓인다. 열 폭을 내용에 맡기면 값 열이 카드마다 다른
+     자리에서 시작한다 — 첫 열 폭을 같이 둔다 (§58.2). */
+  #learnerMode :is(#progressTotals, #progressDifficulty, #depthTable) { table-layout: fixed; }
+  #learnerMode :is(#progressTotals, #progressDifficulty, #depthTable) tr > :first-child { width: 35%; }
   #learnerMode #summaryTables table + table { margin-top: 1.5rem; }
 
   /* 복구 수단. 학습 흐름의 일부가 아니므로 맨 아래 작은 밑줄 글자다.
@@ -334,7 +345,9 @@
     text-align: center;
     font: 400 clamp(2.6rem, 7vw, 4.2rem)/1.15 var(--display);
     color: #fff;
-    -webkit-text-stroke: 7px var(--blue-edge);
+    /* 7px 이면 속공간(읽·훈의 ㅇ, 문의 ㅁ)이 거의 막힌다. paint-order 로 바깥
+       절반만 보이므로 속공간은 두께의 절반씩 좁아진다 — 4px 로 줄였다 (§58.2). */
+    -webkit-text-stroke: 4px var(--blue-edge);
     paint-order: stroke fill;
   }
   #homeView .lead {
@@ -614,6 +627,7 @@
   }
   /* 글자 칸 뒤의 안내 칸. 여기서 목록이 끝난다는 것을 말한다. */
   #learnerMode .lcard.end {
+    margin: 0;
     justify-content: center;
     background: none;
     border: 3px dashed var(--letter-edge);
@@ -621,7 +635,8 @@
     font-weight: 700;
     font-size: 0.95rem;
   }
-  #learnerMode .poses { grid-template-columns: repeat(auto-fill, minmax(11rem, 14rem)); }
+  /* 글자 카드와 같은 6열 격자에 두 칸씩 — 세로 선이 위아래로 맞는다 (§58.2). */
+  #learnerMode .poses .lcard { grid-column: span 2; }
   #learnerMode .block { margin-top: 2.5rem; }
   #learnerMode .block h2 { margin: 0 0 0.25rem; font: 900 1.15rem var(--sans); color: var(--text); }
   #learnerMode .block p { margin: 0.25rem 0; }
@@ -923,7 +938,7 @@
           <li>손이 글자를 하나씩 만듭니다. <strong>그동안은 화면이 아니라 손을 보세요.</strong>
             손이 멈추면 읽은 글자를 입력합니다.</li>
           <li>글자와 글자 사이에 <strong>중립 자세</strong>가 지나갈 수 있습니다. 글자가 아니라
-            "여기서 글자가 바뀐다" 는 신호입니다. 익숙해지면 중립 없이 이어서 나옵니다.</li>
+            “여기서 글자가 바뀐다” 는 신호입니다. 익숙해지면 중립 없이 이어서 나옵니다.</li>
           <li>틀리면 정답을 바로 알려 주지 않고 <strong>천천히 한 번 더</strong> 보여 줍니다.
             또 틀리면 정답과 함께, 잘못 읽은 글자와 맞는 글자를 나란히 보여 줍니다.</li>
           <li>답은 <strong>타자 · 버튼 · 끌어 놓기</strong> 중 하나로 넣습니다. 훈련을 시작할 때
@@ -3214,7 +3229,9 @@ function renderStudyPads(letters, references) {
     studyCard(pad, "lcard", letter, () => showStudy({ letter }, letter));
   }
   // 목록 끝을 말하는 칸. 몇 자인지는 서버 목록의 길이다.
-  add(pad, "p", "lcard end", `여기까지 — 이 손이 만들 수 있는 글자는 ${letters.length}자입니다`);
+  const end = add(pad, "p", "lcard end");
+  add(end, "strong", null, "여기까지");
+  add(end, "span", null, `이 손이 만드는 글자는 ${letters.length}자입니다`);
   const refs = el("studyRefPad");
   clear(refs);
   for (const name of references) {
