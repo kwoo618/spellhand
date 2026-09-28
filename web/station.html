@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>지문자 훈련</title>
+<title>지문자 읽기</title>
 <style>
   /* 한 화면, 두 모드. 학습자 모드와 교사 모드는 **섞지 않는다** (DECISIONS.md §52).
      학습자가 자기 혼동 쌍을 보고 문항을 풀면 순수 판별이 아니게 된다.
@@ -11,8 +11,31 @@
      두 모드의 스타일은 원래 다른 파일이었다. 목적이 다르다 — 학습자 쪽은
      시선을 로봇손에 두려고 화면을 억제하고(PRD 14.1), 교사 쪽은 읽히는 것이
      목적이다(PRD 14.2). 그래서 규칙을 합치지 않고 `#learnerMode` / `#teacherMode`
-     아래로 가둔다. 색 토큰만 같이 쓴다. */
+     아래로 가둔다. 머리 줄·탭 줄은 두 모드가 같이 쓴다.
+
+     학습자 쪽 디자인은 §58 의 시안이다. 입체감은 그림자가 아니라 **아래 테두리**로
+     낸다. box-shadow · gradient · blur · transition · animation 을 쓰지 않는다 (§57). */
+
+  /* 글꼴은 이 서버가 낸다 (`web/fonts/`, OFL). 발표장에 인터넷이 없어도 같은
+     화면이어야 하고, 화면이 외부 주소를 부르지 않는다 (§58). 한글 음절·
+     라틴 기본만 남겨 줄였다. */
+  @font-face { font-family: "Black Han Sans"; font-weight: 400; font-display: swap;
+               src: url("fonts/BlackHanSans-Regular.woff2") format("woff2"); }
+  @font-face { font-family: "Gothic A1"; font-weight: 400; font-display: swap;
+               src: url("fonts/GothicA1-Regular.woff2") format("woff2"); }
+  @font-face { font-family: "Gothic A1"; font-weight: 500; font-display: swap;
+               src: url("fonts/GothicA1-Medium.woff2") format("woff2"); }
+  @font-face { font-family: "Gothic A1"; font-weight: 700; font-display: swap;
+               src: url("fonts/GothicA1-Bold.woff2") format("woff2"); }
+  @font-face { font-family: "Gothic A1"; font-weight: 800; font-display: swap;
+               src: url("fonts/GothicA1-ExtraBold.woff2") format("woff2"); }
+  @font-face { font-family: "Gothic A1"; font-weight: 900; font-display: swap;
+               src: url("fonts/GothicA1-Black.woff2") format("woff2"); }
+  @font-face { font-family: "Outfit"; font-weight: 100 900; font-display: swap;
+               src: url("fonts/Outfit.woff2") format("woff2"); }
+
   :root {
+    /* 교사 모드 */
     --ink: #1a1a1a;
     --muted: #6b6b6b;
     --line: #d8d8d8;
@@ -21,6 +44,39 @@
     --block: #8a2b2b;
     --block-bg: #fdf2f2;
     --ok: #2c5f3f;
+
+    /* 학습자 모드 (§58). 대비는 조합마다 재서 §58 에 적었다.
+       **파랑 = 글자, 초록 = 글자가 아닌 자세.** 카드 색은 분류를 가리킨다 —
+       돌려쓰지 않는다. */
+    --blue: #2477C2;
+    --blue-edge: #1B5C99;
+    --navy: #232A38;
+    --yellow: #FFD24A;
+    --yellow-ink: #5A4200;
+    --yellow-ink-deep: #4A3600;
+    --sky-home: #CFE9FB;
+    --sky-study: #DCEDFB;
+    --sky-train: #EEF5FB;
+    --grass: #86C44F;
+    --grass-top: #A9DC6E;
+    --letter-line: #9CC9EC;
+    --letter-edge: #7FB2DA;
+    --pose-line: #A8D67F;
+    --pose-edge: #7FBB47;
+    --orange: #E8871F;
+    --orange-edge: #BC6810;
+    --orange-ink: #46220A;
+    --green: #3F7A29;
+    --green-edge: #2E5C1E;
+    --text: #3A4654;
+    --text-2: #4A5462;
+    /* 보조 글자색은 **흰 바탕 위에서만** 쓴다. 하늘 바탕에서는 4.5:1 이 안 된다 (§58) */
+    --text-3: #6C7585;
+    --night: #1B2331;
+
+    --display: "Black Han Sans", "Gothic A1", system-ui, sans-serif;
+    --sans: "Gothic A1", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --latin: "Outfit", "Gothic A1", system-ui, sans-serif;
   }
   * { box-sizing: border-box; }
   body {
@@ -34,258 +90,542 @@
   }
   [hidden] { display: none !important; }
 
-  /* ==== 사이드 내비게이션 ================================================
-     조용하게 둔다. 학습 중 시선은 로봇손에 있어야 한다 (PRD 14.1). */
-  .shell {
+  .shell { min-height: 100vh; display: flex; flex-direction: column; }
+
+  /* ==== 머리 줄 — 글자 수 · 제목 =========================================
+     글자 수는 서버가 준 목록의 길이다. 여기 박지 않는다 (§56, §57). */
+  .topbar {
+    height: 64px;
+    flex: none;
     display: grid;
-    grid-template-columns: 11rem minmax(0, 1fr);
-    min-height: 100vh;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    padding: 0 16px;
+    background: var(--blue);
+    border-bottom: 4px solid var(--blue-edge);
+    color: #fff;
+    font-family: var(--sans);
   }
-  /* 본문이 길어도(내 진행) 모드 전환이 화면 밖으로 밀려나지 않게 붙여 둔다. */
-  .side {
+  .topbar h1 {
+    grid-column: 2;
+    margin: 0;
+    font: 400 1.75rem/1 var(--display);
+    letter-spacing: 0.03em;
+  }
+  .countBadge {
+    grid-column: 1;
+    grid-row: 1;
+    justify-self: start;
+    padding: 0.3rem 0.85rem;
+    border-radius: 999px;
+    background: var(--yellow);
+    color: var(--yellow-ink-deep);
+    font-weight: 900;
+    font-size: 0.95rem;
+  }
+
+  /* ==== 탭 줄 ============================================================
+     본문이 길어도(내 진행) 모드 전환이 화면 밖으로 밀려나지 않게 붙여 둔다.
+     세션 중에 잠긴 탭은 회색이고, 오른쪽 끝에 까닭을 적는다 (§52, §56). */
+  .tabs {
     position: sticky;
     top: 0;
-    height: 100vh;
-    border-right: 1px solid var(--line);
-    padding: 1.5rem 0.9rem;
+    z-index: 5;
+    min-height: 54px;
+    flex: none;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: stretch;
+    gap: 0 4px;
+    padding: 0 16px;
+    background: var(--navy);
+    font-family: var(--sans);
+  }
+  .navGroup { display: flex; flex-wrap: wrap; align-items: stretch; gap: 0 4px; }
+  .navLabel { align-self: center; color: var(--sky-home); font-size: 0.8rem; padding: 0 0.5rem; }
+  .navItem {
+    min-height: 54px;
+    padding: 0 1.1rem;
+    border: 0;
+    border-bottom: 4px solid transparent;
+    background: none;
+    color: #fff;
+    font: 800 1.17rem/1 var(--sans);
+    cursor: pointer;
+  }
+  .navItem[aria-current="page"] { color: var(--yellow); border-bottom-color: var(--yellow); }
+  .navItem:disabled { color: var(--text-3); cursor: default; }
+  .navTool {
+    align-self: center;
+    min-height: 44px;
+    margin-left: 0.5rem;
+    padding: 0 1rem;
+    border: 2px solid var(--text-3);
+    border-radius: 10px;
+    background: none;
+    color: #fff;
+    font: 700 0.9rem var(--sans);
+    cursor: pointer;
+  }
+  .navNote { color: var(--sky-home); font-size: 0.85rem; margin: 0; align-self: center; }
+  /* 교사 모드로 가는 문. 탭 줄 오른쪽 끝의 작은 밑줄 글자다. 세션 중에는
+     잠긴다 (DECISIONS.md §52). */
+  .modeSwitch {
+    margin-left: auto;
+    display: flex;
+    flex-direction: row-reverse;
+    align-items: center;
+    gap: 0.75rem;
+  }
+  .modeSwitch button {
+    min-height: 44px;
+    padding: 0 0.25rem;
+    border: 0;
+    background: none;
+    color: #fff;
+    font: 700 0.9rem var(--sans);
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .modeSwitch button:disabled { color: var(--text-3); text-decoration: none; cursor: default; }
+  .content { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+  /* ==== 학습자 모드 ======================================================
+     시선은 로봇손에 있어야 한다. 화면은 상태를 알려 주고 입력을 받는 것까지다
+     (PRD 14.1). 손이 움직이는 동안은 본문 전체가 어두워지고 그것 하나만 남는다. */
+  #learnerMode {
+    flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 1.25rem;
+    color: var(--text);
+    font: 500 1rem/1.6 var(--sans);
   }
-  .brand { font-weight: 600; padding: 0 0.5rem; }
-  .navGroup { display: flex; flex-direction: column; gap: 0.15rem; }
-  .navLabel { color: var(--muted); font-size: 0.8rem; padding: 0 0.5rem; }
-  .navItem {
-    text-align: left;
-    font: inherit;
-    padding: 0.4rem 0.5rem;
-    border: 0;
-    border-radius: 2px;
-    background: none;
-    color: var(--muted);
-    cursor: pointer;
+  /* 바탕은 끝까지 채우고 내용은 가운데 한 줄로. */
+  #learnerMode > main {
+    flex: 1;
+    padding: 2rem max(16px, calc((100% - 60rem) / 2)) 3rem;
   }
-  .navItem:disabled { opacity: 0.4; cursor: default; }
-  .navItem[aria-current="page"] { color: var(--ink); font-weight: 600; background: #efefed; }
-  .navTool {
-    margin-top: 0.75rem;
-    text-align: left;
-    font: inherit;
-    font-size: 0.9rem;
-    padding: 0.4rem 0.5rem;
-    border: 1px solid var(--line);
-    border-radius: 2px;
+  #homeView { background: var(--sky-home); }
+  #studyView { background: var(--sky-study); }
+  #trainView, #progressView { background: var(--sky-train); }
+
+  #learnerMode .viewHead {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    margin-bottom: 1.5rem;
+  }
+  #learnerMode .viewHead h2 { margin: 0; font: 400 2rem/1.2 var(--display); color: var(--text); }
+  #learnerMode .counter { color: var(--text-2); font-weight: 700; font-variant-numeric: tabular-nums; }
+
+  #learnerMode .card {
     background: #fff;
-    color: var(--ink);
+    border: 2px solid var(--letter-line);
+    border-bottom: 6px solid var(--letter-edge);
+    border-radius: 18px;
+    padding: 1.5rem;
+  }
+  #learnerMode .card.narrow { max-width: 34rem; }
+  #learnerMode .card .note, #learnerMode .card label, #learnerMode .card legend { color: var(--text-3); }
+
+  #learnerMode label { display: block; margin-bottom: 0.5rem; color: var(--text-2); font-weight: 700; }
+  #learnerMode input[type="text"] {
+    width: 100%;
+    min-height: 56px;
+    padding: 0.6rem 1rem;
+    border: 2px solid var(--letter-line);
+    border-bottom: 5px solid var(--letter-edge);
+    border-radius: 12px;
+    background: #fff;
+    color: var(--text);
+    font: 600 1.8rem var(--latin);
+    letter-spacing: 0.35em;
+    text-transform: uppercase;
+  }
+  /* 이름 칸. 글자 입력 칸처럼 벌리고 대문자로 올리지 않는다. */
+  #learnerMode input[type="text"].plain {
+    font: 700 1.15rem var(--sans);
+    letter-spacing: normal;
+    text-transform: none;
+  }
+  #learnerMode input[type="text"]:focus { outline: 3px solid var(--blue); outline-offset: 2px; }
+  #learnerMode input[type="text"]:disabled { background: var(--sky-train); color: var(--text-3); }
+
+  #learnerMode .row { display: flex; gap: 0.6rem; margin-top: 1rem; flex-wrap: wrap; align-items: center; }
+  /* 버튼: 흰 바탕 + 아래 테두리. 누를 수 있는 것은 전부 44px 이상이다. */
+  #learnerMode button {
+    min-height: 48px;
+    padding: 0 1.4rem;
+    border: 2px solid var(--letter-line);
+    border-bottom: 5px solid var(--letter-edge);
+    border-radius: 12px;
+    background: #fff;
+    color: var(--text);
+    font: 800 1.05rem/1.2 var(--sans);
     cursor: pointer;
   }
-  .navNote { color: var(--muted); font-size: 0.75rem; margin: 0.3rem 0.5rem 0; }
-  /* 교사 모드로 가는 문. **일부러 눈에 덜 띄게 둔다** — 맨 아래, 작은 밑줄
-     글자다. 세션 중에는 잠긴다 (DECISIONS.md §52). */
-  .modeSwitch { margin-top: auto; padding: 0 0.5rem; }
-  .modeSwitch button {
+  #learnerMode button.primary {
+    background: var(--green);
+    border-color: var(--green);
+    border-bottom-color: var(--green-edge);
+    color: #fff;
+  }
+  #learnerMode button.see {
+    background: var(--orange);
+    border-color: var(--orange);
+    border-bottom-color: var(--orange-edge);
+    color: var(--orange-ink);
+    font-weight: 900;
+  }
+  #learnerMode button:disabled { opacity: 0.45; cursor: default; }
+  #learnerMode button:focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
+
+  #learnerMode .note { color: var(--text-2); font-size: 0.95rem; }
+  #learnerMode .error { color: var(--block); font-weight: 700; }
+  #learnerMode .error:empty { display: none; }
+
+  #learnerMode table { border-collapse: collapse; width: 100%; margin-top: 0.75rem; }
+  #learnerMode caption { text-align: left; font-weight: 800; padding-bottom: 0.4rem; color: var(--text); }
+  #learnerMode th, #learnerMode td {
+    text-align: left;
+    padding: 0.5rem 0.6rem 0.5rem 0;
+    border-bottom: 2px solid var(--sky-study);
+  }
+  #learnerMode th { color: var(--text-3); font-weight: 500; }
+  #learnerMode td { font-weight: 700; font-variant-numeric: tabular-nums; }
+  #learnerMode #summaryTables th { width: 60%; }
+  #learnerMode #summaryTables table + table { margin-top: 1.5rem; }
+
+  /* 복구 수단. 학습 흐름의 일부가 아니므로 맨 아래 작은 밑줄 글자다.
+     멈추기(노란 버튼)와 모양이 달라야 한다 — 결과가 다른 두 기능이 같아
+     보이면 안 된다 (DECISIONS.md §45). */
+  #learnerMode .recovery { margin-top: 3rem; padding-top: 1rem; border-top: 2px solid var(--letter-line); }
+  #learnerMode .recovery button {
+    min-height: 44px;
     padding: 0;
     border: 0;
     background: none;
-    font: inherit;
-    font-size: 0.8rem;
-    color: var(--muted);
-    text-decoration: underline;
-    cursor: pointer;
-  }
-  .modeSwitch button:disabled { text-decoration: none; opacity: 0.5; cursor: default; }
-  .modeSwitch .navNote { margin: 0.3rem 0 0; }
-  .content { min-width: 0; }
-
-  @media (max-width: 48rem) {
-    .shell { grid-template-columns: minmax(0, 1fr); min-height: 0; }
-    .side {
-      position: static;
-      height: auto;
-      flex-direction: row;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 0.5rem 1rem;
-      border-right: 0;
-      border-bottom: 1px solid var(--line);
-      padding: 0.75rem 1rem;
-    }
-    .navGroup { flex-direction: row; flex-wrap: wrap; align-items: center; }
-    .navTool { margin-top: 0; }
-    .modeSwitch { margin-top: 0; margin-left: auto; }
-  }
-
-  /* ==== 학습자 모드 ======================================================
-     시선은 로봇손에 있어야 한다. 화면은 상태를 알려 주고 입력을 받는 것까지다.
-     색 강조와 움직임을 최소로 두고 여백과 대비로만 구분한다 (PRD 14.1). */
-  #learnerMode { display: flex; justify-content: center; padding: 4rem 1.5rem; }
-  #learnerMode main { width: 100%; max-width: 30rem; }
-
-  #learnerMode header {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    padding-bottom: 0.75rem;
-    border-bottom: 1px solid var(--line);
-    margin-bottom: 3rem;
-  }
-  #learnerMode .learner { font-weight: 600; }
-  #learnerMode .counter { color: var(--muted); font-variant-numeric: tabular-nums; }
-
-  #learnerMode .status {
-    min-height: 4rem;
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-    color: var(--muted);
-  }
-  /* 정지는 손이 움직이는 동안에만 나타난다. 찾을 수 있으면 되고, 시선을
-     끌 필요는 없다 — 시선은 로봇손에 있어야 한다 (PRD 14.1). */
-  #learnerMode .status .stop {
-    margin-left: auto;
-    flex: none;
-    padding: 0.4rem 0.9rem;
-    border-color: #8a2b2b;
-    color: #8a2b2b;
-  }
-  #learnerMode .status .stop[hidden] { display: none; }
-  #learnerMode .dot {
-    width: 0.5rem; height: 0.5rem; border-radius: 50%;
-    background: var(--line); flex: none;
-  }
-  #learnerMode .dot.live { background: var(--accent); }
-
-  #learnerMode label { display: block; margin-bottom: 0.5rem; color: var(--muted); }
-  #learnerMode input[type="text"] {
-    width: 100%;
-    padding: 0.85rem 1rem;
-    font: inherit;
-    font-size: 1.4rem;
-    letter-spacing: 0.35em;
-    text-transform: uppercase;
-    border: 1px solid var(--line);
-    border-radius: 2px;
-    background: #fff;
-    color: var(--ink);
-  }
-  /* 이름 칸. 글자 입력 칸처럼 벌리고 대문자로 올리지 않는다. */
-  #learnerMode input[type="text"].plain { letter-spacing: normal; text-transform: none; }
-  #learnerMode input[type="text"]:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
-  #learnerMode input[type="text"]:disabled { background: #f2f2f1; color: var(--muted); }
-
-  #learnerMode .row { display: flex; gap: 0.5rem; margin-top: 1rem; flex-wrap: wrap; }
-  #learnerMode button {
-    font: inherit;
-    padding: 0.7rem 1.2rem;
-    border: 1px solid var(--line);
-    border-radius: 2px;
-    background: #fff;
-    color: var(--ink);
-    cursor: pointer;
-  }
-  #learnerMode button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-  #learnerMode button:disabled { opacity: 0.4; cursor: default; }
-
-  #learnerMode .result { margin-top: 2rem; padding-top: 1.25rem; border-top: 1px solid var(--line); }
-  #learnerMode .result[hidden] { display: none; }
-  #learnerMode .verdict { font-weight: 600; }
-  #learnerMode .reveal { font-size: 1.3rem; margin: 0.5rem 0; }
-  #learnerMode .reveal .label { display: inline-block; min-width: 3.5rem; font-size: 1rem; color: var(--muted); }
-  #learnerMode .reveal .letters { letter-spacing: 0.3em; }
-  #learnerMode .reveal.mine { font-size: 1.1rem; color: var(--muted); }
-  #learnerMode .hint { color: var(--muted); }
-  #learnerMode .note { color: var(--muted); font-size: 0.9rem; }
-
-  #learnerMode table { border-collapse: collapse; width: 100%; margin-top: 0.75rem; }
-  #learnerMode caption { text-align: left; font-weight: 600; padding-bottom: 0.4rem; }
-  #learnerMode th, #learnerMode td { text-align: left; padding: 0.4rem 0.6rem 0.4rem 0; border-bottom: 1px solid var(--line); }
-  #learnerMode th { color: var(--muted); font-weight: 400; }
-  #learnerMode #summaryTables th { width: 60%; }
-  #learnerMode td { font-variant-numeric: tabular-nums; }
-
-  #learnerMode .error { color: #8a2b2b; }
-
-  /* 복구 수단. 학습 흐름의 일부가 아니므로 눈에 띄지 않는 자리에 둔다.
-     정지(위, 테두리 있는 버튼)와 달리 밑줄 글자다 — 결과가 다른 두 기능이
-     같아 보이면 안 된다 (DECISIONS.md §45). */
-  #learnerMode .recovery { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--line); }
-  #learnerMode .recovery button {
-    padding: 0.3rem 0;
-    border: 0;
-    background: none;
-    color: var(--muted);
-    font-size: 0.85rem;
+    color: var(--text-2);
+    font: 700 0.9rem var(--sans);
     text-decoration: underline;
   }
-  #learnerMode .recovery button.armed { color: #8a2b2b; text-decoration: none; font-weight: 600; }
+  #learnerMode .recovery button.armed { color: var(--block); text-decoration: none; }
   #learnerMode .recovery .note { display: inline; margin-left: 0.6rem; }
 
-  /* 안내 화면. 본문 글자보다 한 단계만 키운다 — 읽히면 된다. */
-  #learnerMode .lead { font-size: 1.1rem; margin: 0 0 1rem; }
-  #learnerMode .guide ol { margin: 0.5rem 0 1rem; padding-left: 1.3rem; }
-  #learnerMode .guide li { margin-bottom: 0.6rem; }
+  /* ---- 홈 --------------------------------------------------------------
+     하늘 · 구름 · 잔디. 구름은 둥근 사각형이다 — 그림이 아니라 모양이다. */
+  #learnerMode > #homeView { position: relative; overflow: hidden; padding-bottom: calc(62px + 3rem); }
+  #homeView::after {
+    content: "";
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    height: 62px;
+    background: var(--grass);
+    border-top: 6px solid var(--grass-top);
+  }
+  #homeView .cloud { position: absolute; background: #fff; border-radius: 999px; }
+  #homeView .cloud.c1 { width: 180px; height: 56px; top: 36px; left: 6%; }
+  #homeView .cloud.c2 { width: 120px; height: 40px; top: 110px; right: 9%; }
+  #homeView .cloud.c3 { width: 90px; height: 32px; top: 250px; left: 14%; }
+  #homeView > :not(.cloud) { position: relative; z-index: 1; }
+  #homeView .hero {
+    margin: 1rem 0 0.75rem;
+    text-align: center;
+    font: 400 clamp(2.6rem, 7vw, 4.2rem)/1.15 var(--display);
+    color: #fff;
+    -webkit-text-stroke: 7px var(--blue-edge);
+    paint-order: stroke fill;
+  }
+  #homeView .lead {
+    max-width: 46rem;
+    margin: 0 auto 2rem;
+    text-align: center;
+    font-size: 1.1rem;
+    color: var(--text);
+  }
+  #homeView .lead strong { font-weight: 900; }
+  #homeView .note { text-align: center; }
 
-  /* ---- 세 상태: 손이 움직이는 중 / 답할 차례 / 결과 (DECISIONS §57) -----
-     **색이 아니라 대비로 가른다.** 손이 움직이는 동안은 입력 쪽을 낮춰 화면이
-     조용해지고, 시선은 손으로 간다. 답할 차례에만 입력이 제 대비로 돌아온다.
-     전환은 즉시다 — transition 을 두지 않는다. 움직이는 화면은 시선을 끈다. */
-  #learnerMode .status .phase { color: var(--ink); font-weight: 600; flex: none; }
-  #learnerMode [data-phase="moving"] .answerArea,
+  #homeView .menu { display: grid; gap: 0.75rem; max-width: 40rem; margin: 0 auto; }
+  #learnerMode .menuRow {
+    display: grid;
+    grid-template-columns: 64px minmax(0, 1fr) 24px;
+    align-items: center;
+    gap: 1rem;
+    width: 100%;
+    min-height: 88px;
+    padding: 0.75rem 1rem 0.75rem 0.75rem;
+    text-align: left;
+    border-radius: 18px;
+    border-bottom-width: 6px;
+  }
+  #learnerMode .menuRow .swatch {
+    width: 64px; height: 64px;
+    display: grid; place-items: center;
+    border-radius: 14px;
+  }
+  #learnerMode .menuRow .swatch svg { width: 38px; height: 38px; }
+  #learnerMode .menuRow .swatch.letters { background: var(--blue); color: #fff; }
+  #learnerMode .menuRow .swatch.train { background: var(--green); color: #fff; }
+  #learnerMode .menuRow .swatch.progress { background: var(--yellow); color: var(--yellow-ink); }
+  #learnerMode .menuRow strong { display: block; font: 900 1.3rem/1.3 var(--sans); color: var(--text); }
+  #learnerMode .menuRow .desc { display: block; font-weight: 500; font-size: 0.95rem; color: var(--text-3); }
+  #learnerMode .menuRow .chev { width: 24px; height: 24px; color: var(--text-3); }
+
+  #homeView .guide { max-width: 40rem; margin: 2rem auto 0; }
+  #homeView .guide h2 { margin: 0 0 0.5rem; font: 900 1.15rem var(--sans); }
+  #homeView .guide ol { margin: 0.5rem 0 1rem; padding-left: 1.3rem; }
+  #homeView .guide li { margin-bottom: 0.6rem; }
+  #homeView .guide .note { text-align: left; color: var(--text-3); }
+
+  /* 글자 타일 줄. 누르는 것이 아니다 — 무엇을 배우는지 보여 주는 줄이다. */
+  #learnerMode .tileRow {
+    list-style: none;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.5rem;
+    margin: 2.5rem auto 0;
+    padding: 0;
+  }
+  #learnerMode .tileRow li {
+    min-width: 48px;
+    padding: 0.35rem 0.6rem;
+    text-align: center;
+    background: #fff;
+    border: 2px solid var(--letter-line);
+    border-bottom: 5px solid var(--letter-edge);
+    border-radius: 10px;
+    font: 600 1.5rem/1.2 var(--latin);
+    color: var(--text);
+  }
+
+  /* ---- 상태 — 손이 움직이는 중 / 답할 차례 / 결과 (DECISIONS §57) -----
+     배지 · 큰 글자 · 한 줄 설명. 공부와 훈련이 같은 모양을 쓴다. */
+  #learnerMode .status {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.35rem;
+    margin-bottom: 1.5rem;
+  }
+  #learnerMode .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.3rem 0.85rem;
+    border-radius: 999px;
+    background: var(--navy);
+    color: #fff;
+    font-weight: 800;
+    font-size: 0.9rem;
+  }
+  #learnerMode .dot { width: 0.55rem; height: 0.55rem; border-radius: 50%; background: var(--text-3); flex: none; }
+  #learnerMode .dot.live { background: var(--yellow); }
+  #learnerMode .status .phase { font: 400 2.4rem/1.2 var(--display); color: var(--text); }
+  #learnerMode .status .line { color: var(--text-2); }
+  #learnerMode .status .glyph { display: none; }
+  /* 멈추기는 손이 움직이는 동안에만 나타난다 (§45). */
+  #learnerMode button.stop {
+    min-height: 56px;
+    margin-top: 1.25rem;
+    padding: 0 2.4rem;
+    background: var(--yellow);
+    border-color: var(--yellow);
+    border-bottom: 6px solid var(--yellow-ink);
+    color: var(--yellow-ink);
+    font-weight: 900;
+    font-size: 1.2rem;
+  }
+
+  /* ---- 손이 움직이는 동안 — 본문 전체가 어두워진다 (§57 → §58) ----------
+     §57 의 "차례를 따르는 대비" 를 이 디자인에서 구현한 형태다. 보이는 공부·
+     훈련 패널이 `data-phase="moving"` 이면 본문을 밤색으로 채우고 상태 하나만
+     남긴다. 탭 줄의 비활성 항목도 회색으로 내린다. 전환은 즉시다. */
+  .shell:has(#learnerMode:not([hidden]) > main:not([hidden]) > [data-phase="moving"]:not([hidden])) .content,
+  #learnerMode > main:has(> [data-phase="moving"]:not([hidden])) {
+    background: var(--night);
+  }
+  /* 회색(#6C7585)은 남색 위에서 3.09:1 이다. 탭 글자가 굵은 18.7px 라 큰 글자
+     기준(3:1)을 넘는다. 작은 글자인 교사 모드 문은 내리지 않는다 (§58). */
+  .shell:has(#learnerMode:not([hidden]) > main:not([hidden]) > [data-phase="moving"]:not([hidden])) .navItem:not([aria-current="page"]) {
+    color: var(--text-3);
+  }
+  #learnerMode > main:has(> [data-phase="moving"]:not([hidden])) > :not([data-phase="moving"]),
+  #learnerMode [data-phase="moving"] > :not(.status) {
+    display: none;
+  }
+  #learnerMode [data-phase="moving"] .status {
+    align-items: center;
+    text-align: center;
+    min-height: 60vh;
+    justify-content: center;
+    margin: 0;
+  }
+  #learnerMode [data-phase="moving"] .badge { background: var(--yellow); color: var(--yellow-ink-deep); }
+  #learnerMode [data-phase="moving"] .dot.live { background: var(--yellow-ink-deep); }
+  #learnerMode [data-phase="moving"] .glyph {
+    display: block;
+    min-height: 1em;
+    margin: 0.5rem 0;
+    font: 600 158px/1 var(--latin);
+    color: #fff;
+  }
+  /* 글자가 아닌 자세의 이름(한글)과 훈련의 몇 번째 글자는 알파벳보다 작게. */
+  #learnerMode [data-phase="moving"] .glyph.word { font: 900 72px/1.2 var(--sans); }
+  #learnerMode [data-phase="moving"] .phase { font: 900 1.6rem/1.3 var(--sans); color: #fff; }
+  #learnerMode [data-phase="moving"] .line { color: var(--sky-home); }
+
+  /* 확인 중에는 입력을 낮춘다. 답할 차례에 제 대비로 돌아온다. */
   #learnerMode [data-phase="checking"] .answerArea { opacity: 0.35; }
+  #learnerMode [data-phase="answer"] .phase { color: var(--green); }
   /* 결과에서는 입력 칸을 접는다. 결과와 [다음 문항] 이 화면 아래로 밀려나지
      않게 한다. 내 답은 결과 안에 다시 적힌다. */
   #learnerMode [data-phase="result"] .answerArea { display: none; }
-  #learnerMode [data-phase="answer"] .status,
-  #learnerMode [data-phase="paused"] .status { color: var(--ink); }
-  #learnerMode [data-phase="answer"] input[type="text"]:not(:disabled),
-  #learnerMode [data-phase="answer"] .composed { border-color: var(--accent); }
-  #learnerMode [data-phase="result"] .result { border-top: 2px solid var(--accent); }
-  #learnerMode [data-phase="result"] .verdict { font-size: 1.2rem; }
-  #learnerMode #studyPanel[data-phase="moving"] .pad { opacity: 0.35; }
+  #learnerMode [data-phase="result"] .result { border-top: 6px solid var(--text); }
 
-  /* 글자 버튼 — 공부 화면과 훈련의 버튼·끌어 놓기 입력이 같이 쓴다.
-     목록은 서버가 준다 (`/api/letters`). 디자인은 다음 작업이다 — 기존 버튼
-     모양을 그대로 쓰고 크기만 맞춘다 (DECISIONS §56). */
-  #learnerMode .pad { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.75rem; }
+  /* ---- 훈련 머리 — 학습자 · 진행 막대 · 몇 번째 -------------------------- */
+  #learnerMode .trainHead { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.5rem; }
+  #learnerMode .who {
+    padding: 0.35rem 0.9rem;
+    border-radius: 999px;
+    background: var(--blue);
+    color: #fff;
+    font-weight: 800;
+  }
+  #learnerMode .bar {
+    flex: 1 1 10rem;
+    height: 14px;
+    border-radius: 999px;
+    background: #fff;
+    border: 2px solid var(--letter-line);
+    overflow: hidden;
+  }
+  #learnerMode .bar > span { display: block; height: 100%; width: 0; background: var(--yellow); }
+
+  /* ---- 답 칸 · 글자 패드 --------------------------------------------------
+     목록은 서버가 준다 (`/api/letters`). 문항에 맞춰 줄이지 않는다 (§56). */
+  #learnerMode .pad { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 1rem; }
   #learnerMode .pad button,
   #learnerMode .tile {
-    min-width: 3rem;
-    padding: 0.6rem 0;
-    font-size: 1.3rem;
+    min-width: 60px;
+    min-height: 64px;
+    padding: 0 0.6rem;
+    font: 600 2rem/1 var(--latin);
     text-align: center;
   }
-  #learnerMode .pad button.wide { min-width: 0; padding: 0.6rem 1rem; font-size: 1rem; }
   #learnerMode .tile {
-    display: inline-block;
-    border: 1px solid var(--line);
-    border-radius: 2px;
+    display: inline-grid;
+    place-items: center;
     background: #fff;
+    color: var(--text);
+    border: 2px solid var(--letter-line);
+    border-bottom: 5px solid var(--letter-edge);
+    border-radius: 12px;
     user-select: none;
   }
   #learnerMode #composeBox.grab .tile { cursor: grab; touch-action: none; }
-  #learnerMode .pad.off .tile { opacity: 0.4; }
+  #learnerMode .pad.off .tile { opacity: 0.45; }
   #learnerMode .composed {
-    min-height: 3.6rem;
+    min-height: 96px;
     display: flex;
     flex-wrap: wrap;
-    gap: 0.4rem;
-    padding: 0.4rem;
-    border: 1px solid var(--line);
-    border-radius: 2px;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.75rem;
+    border: 2px solid var(--letter-line);
+    border-bottom: 6px solid var(--letter-edge);
+    border-radius: 18px;
     background: #fff;
   }
-  #learnerMode .composed.over { outline: 2px dashed var(--accent); outline-offset: 1px; }
-  #learnerMode fieldset.modes { border: 0; padding: 0; margin: 0 0 1.5rem; }
-  #learnerMode fieldset.modes legend { color: var(--muted); padding: 0; margin-bottom: 0.4rem; }
-  #learnerMode fieldset.modes label {
-    display: inline-flex; align-items: center; gap: 0.35rem;
-    margin: 0 1.1rem 0 0; color: var(--ink);
+  #learnerMode .composed .tile { min-width: 72px; min-height: 72px; font-size: 2.4rem; }
+  /* 다음 글자가 들어갈 빈 칸. 칸 수는 그리지 않는다 — 몇 글자인지는 판별
+     트랙의 머리 줄만 말한다 (PRD 14.1). */
+  #learnerMode .composed::after {
+    content: "";
+    width: 72px;
+    height: 72px;
+    border: 3px dashed var(--letter-edge);
+    border-radius: 12px;
   }
+  #learnerMode .composed.over { outline: 3px dashed var(--blue); outline-offset: 2px; }
 
-  /* 내 진행. 요약 표와 같은 모양으로 둔다 — 새 시각 요소를 들이지 않는다. */
+  #learnerMode fieldset.modes { border: 0; padding: 0; margin: 0 0 1.5rem; }
+  #learnerMode fieldset.modes legend { padding: 0; margin-bottom: 0.5rem; font-weight: 700; }
+  #learnerMode fieldset.modes label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-height: 48px;
+    margin: 0 0.5rem 0.5rem 0;
+    padding: 0 1.1rem;
+    border: 2px solid var(--letter-line);
+    border-bottom: 5px solid var(--letter-edge);
+    border-radius: 12px;
+    background: #fff;
+    color: var(--text);
+    font-weight: 800;
+    cursor: pointer;
+  }
+  #learnerMode fieldset.modes label:has(input:checked) { border-color: var(--blue); background: var(--sky-study); }
+  #learnerMode fieldset.modes input { width: 1.2rem; height: 1.2rem; margin: 0; accent-color: var(--blue); }
+
+  #learnerMode .result { margin-top: 1rem; padding-top: 1.25rem; }
+  #learnerMode .verdict { margin: 0 0 0.5rem; font: 400 2rem/1.25 var(--display); color: var(--text); }
+  #learnerMode .reveal { margin: 0.4rem 0; font-size: 1.1rem; }
+  #learnerMode .reveal .label { display: inline-block; min-width: 3.5rem; color: var(--text-2); font-weight: 700; }
+  #learnerMode .reveal .letters { font: 600 2rem var(--latin); letter-spacing: 0.3em; color: var(--text); }
+  #learnerMode .reveal.mine .letters { font-size: 1.5rem; color: var(--text-2); }
+  #learnerMode .hint { color: var(--text-2); }
+
+  /* ---- 글자(공부) — 6열 카드 ---------------------------------------------- */
+  #learnerMode .cards {
+    display: grid;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    gap: 0.75rem;
+  }
+  @media (max-width: 52rem) { #learnerMode .cards { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  #learnerMode .lcard {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.6rem;
+    padding: 0.9rem 0.75rem 0.75rem;
+    text-align: center;
+    background: #fff;
+    border: 2px solid var(--letter-line);
+    border-bottom: 6px solid var(--letter-edge);
+    border-radius: 16px;
+  }
+  #learnerMode .lcard .big { font: 600 60px/1.1 var(--latin); color: var(--text); }
+  #learnerMode .lcard hr { width: 100%; margin: 0; border: 0; border-top: 2px dashed var(--letter-line); }
+  #learnerMode .lcard.pose { border-color: var(--pose-line); border-bottom-color: var(--pose-edge); }
+  #learnerMode .lcard.pose .big { font: 900 1.6rem/60px var(--sans); }
+  #learnerMode .lcard.pose hr { border-top-color: var(--pose-line); }
+  #learnerMode .lcard .tag {
+    align-self: center;
+    padding: 0.15rem 0.65rem;
+    border-radius: 999px;
+    background: var(--green);
+    color: #fff;
+    font-weight: 800;
+    font-size: 0.8rem;
+  }
+  /* 글자 칸 뒤의 안내 칸. 여기서 목록이 끝난다는 것을 말한다. */
+  #learnerMode .lcard.end {
+    justify-content: center;
+    background: none;
+    border: 3px dashed var(--letter-edge);
+    color: var(--text-2);
+    font-weight: 700;
+    font-size: 0.95rem;
+  }
+  #learnerMode .poses { grid-template-columns: repeat(auto-fill, minmax(11rem, 14rem)); }
   #learnerMode .block { margin-top: 2.5rem; }
-  #learnerMode .block h2 { font-size: 1rem; margin: 0 0 0.25rem; }
+  #learnerMode .block h2 { margin: 0 0 0.25rem; font: 900 1.15rem var(--sans); color: var(--text); }
   #learnerMode .block p { margin: 0.25rem 0; }
+  #learnerMode .card.block { margin-top: 1.25rem; }
 
   /* ==== 교사 모드 ========================================================
      학습자 모드와 목적이 다르다. 저쪽은 시선을 로봇손에 두기 위해 화면을
@@ -496,13 +836,17 @@
 </head>
 <body>
 <div class="shell">
-  <nav class="side" aria-label="화면">
-    <div class="brand">지문자 훈련</div>
+  <!-- 머리 줄. 글자 수는 서버가 준 목록으로 채운다 (§56, §57) -->
+  <header class="topbar">
+    <span class="countBadge" id="letterCount" hidden></span>
+    <h1>지문자 읽기</h1>
+  </header>
 
+  <nav class="tabs" aria-label="화면">
     <!-- 학습자 모드의 화면들. 혼동 쌍·약점 쌍으로 가는 길은 여기 없다 (§52) -->
     <div class="navGroup" id="learnerNav">
-      <button class="navItem" type="button" data-view="home" aria-current="page">안내</button>
-      <button class="navItem" type="button" data-view="study">공부</button>
+      <button class="navItem" type="button" data-view="home" aria-current="page">홈</button>
+      <button class="navItem" type="button" data-view="study">글자</button>
       <button class="navItem" type="button" data-view="train">훈련</button>
       <button class="navItem" type="button" data-view="progress">내 진행</button>
     </div>
@@ -518,6 +862,7 @@
       <p class="navNote" id="mockhandNote"></p>
     </div>
 
+    <!-- 탭 줄 오른쪽 끝. 세션 중에는 잠기고 그 까닭이 옆에 적힌다 (§52) -->
     <div class="modeSwitch">
       <button type="button" id="modeBtn">교사 모드</button>
       <p class="navNote" id="modeNote"></p>
@@ -529,27 +874,50 @@
   <!-- 학습자 모드                                                        -->
   <!-- ================================================================ -->
   <div id="learnerMode">
-    <!-- 안내 — 처음 여는 화면. 무엇을 하는 도구인지, 어떻게 진행되는지를 여기서
+    <!-- 홈 — 처음 여는 화면. 무엇을 하는 도구인지, 어떻게 진행되는지를 여기서
          다 알 수 있게 한다. 길게 쓰지 않는다 — 읽고 바로 시작한다 (DECISIONS §57) -->
     <main id="homeView">
-      <header>
-        <span class="learner">지문자 읽기 훈련</span>
-      </header>
+      <div class="cloud c1" aria-hidden="true"></div>
+      <div class="cloud c2" aria-hidden="true"></div>
+      <div class="cloud c3" aria-hidden="true"></div>
 
+      <h2 class="hero">지문자 읽기 훈련</h2>
       <p class="lead">
-        로봇손이 영어 지문자를 만들면, 그것을 보고 어떤 글자인지 읽어 입력합니다.
+        로봇손이 영어 지문자를 만들면, 그것을 보고 어떤 글자인지 읽어 입력합니다.<br>
         손으로 만드는 법이 아니라 <strong>남의 손을 읽는 법</strong>을 훈련합니다.
       </p>
-      <p>처음이라면 <strong>공부</strong>에서 글자를 하나씩 눌러 손 모양을 먼저 보세요.</p>
 
-      <div class="row">
-        <button class="primary" id="homeStudyBtn" type="button">공부부터</button>
-        <button id="homeTrainBtn" type="button">훈련 시작</button>
+      <div class="menu">
+        <button class="menuRow" id="homeStudyBtn" type="button">
+          <span class="swatch letters" aria-hidden="true">
+            <!-- 손가락 다섯 -->
+            <svg viewBox="0 0 40 40" fill="currentColor"><rect x="4" y="12" width="5" height="16" rx="2.5"/><rect x="10.5" y="4" width="5" height="22" rx="2.5"/><rect x="17.5" y="2" width="5" height="24" rx="2.5"/><rect x="24.5" y="4" width="5" height="22" rx="2.5"/><rect x="31" y="9" width="5" height="18" rx="2.5"/><rect x="8" y="22" width="26" height="15" rx="6"/></svg>
+          </span>
+          <span><strong>글자</strong>
+            <span class="desc">처음이라면 여기부터. 글자를 하나씩 눌러 손 모양을 먼저 봅니다</span></span>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>
+        </button>
+        <button class="menuRow" id="homeTrainBtn" type="button">
+          <span class="swatch train" aria-hidden="true">
+            <svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linejoin="round"><circle cx="20" cy="20" r="15"/><path d="M16 13l11 7-11 7z"/></svg>
+          </span>
+          <span><strong>훈련</strong>
+            <span class="desc">손이 만든 글자를 읽고 답합니다. 기록이 남습니다</span></span>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>
+        </button>
+        <button class="menuRow" id="homeProgressBtn" type="button">
+          <span class="swatch progress" aria-hidden="true">
+            <svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 34h30"/><path d="M8 27l8-8 6 5 11-12"/></svg>
+          </span>
+          <span><strong>내 진행</strong>
+            <span class="desc">지금 난이도와 세션별 정확도를 봅니다</span></span>
+          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>
+        </button>
       </div>
       <!-- 참여할 세션이 열려 있으면 여기서도 알린다. 들어가는 곳은 훈련이다 -->
       <p class="note" id="homeJoinNote" hidden></p>
 
-      <section class="block guide">
+      <section class="card guide">
         <h2>훈련은 이렇게 진행됩니다</h2>
         <ol>
           <li>손이 글자를 하나씩 만듭니다. <strong>그동안은 화면이 아니라 손을 보세요.</strong>
@@ -562,21 +930,24 @@
             고르고, 세션 중에는 바뀌지 않습니다.</li>
         </ol>
         <p class="note">
-          손을 멈추려면 손이 움직이는 동안 나타나는 [정지] 를 누르세요. 공부는 기록이
+          손을 멈추려면 손이 움직이는 동안 나타나는 [멈추기] 를 누르세요. 글자 화면은 기록이
           남지 않고, 훈련은 기록되어 다음 세션의 난이도가 됩니다.
         </p>
       </section>
+
+      <!-- 이 손이 만드는 글자. 목록은 서버가 준다 — 여기 박지 않는다 -->
+      <ul class="tileRow" id="homeTiles" aria-label="이 손이 만드는 글자"></ul>
     </main>
 
-    <!-- 공부 — 글자를 눌러 손으로 본다. 기록은 남지 않는다 (DECISIONS §56).
-         글자 버튼은 서버가 준 목록으로 그린다. 여기 박지 않는다 -->
+    <!-- 글자(공부) — 글자를 눌러 손으로 본다. 기록은 남지 않는다 (DECISIONS §56).
+         글자 카드는 서버가 준 목록으로 그린다. 여기 박지 않는다 -->
     <main id="studyView" hidden>
-      <header>
-        <span class="learner">공부</span>
+      <header class="viewHead">
+        <h2>글자</h2>
         <span class="counter" id="studyWho"></span>
       </header>
 
-      <section id="studyStart">
+      <section id="studyStart" class="card narrow">
         <p class="note">
           글자를 하나씩 눌러 로봇손으로 봅니다. 채점하지 않고, 기록도 남지 않습니다.
         </p>
@@ -590,13 +961,15 @@
 
       <section id="studyPanel" hidden>
         <div class="status">
-          <span class="dot" id="studyDot"></span>
+          <span class="badge"><span class="dot" id="studyDot"></span><span id="studyBadge">손이 멈췄어요</span></span>
+          <span class="glyph" id="studyGlyph"></span>
           <span class="phase" id="studyPhase">누를 차례</span>
-          <span id="studyStatus">글자를 누르면 손이 그 자세를 만듭니다</span>
-          <button class="stop" id="studyStopBtn" type="button" hidden>정지</button>
+          <span class="line" id="studyStatus">글자를 누르면 손이 그 자세를 만듭니다</span>
+          <button class="stop" id="studyStopBtn" type="button" hidden>멈추기</button>
         </div>
 
-        <div class="pad" id="studyPad"></div>
+        <!-- 파랑 = 글자. 마지막 칸은 목록이 여기서 끝난다는 안내다 -->
+        <div class="cards" id="studyPad"></div>
 
         <section class="block">
           <h2>글자가 아닌 자세</h2>
@@ -604,7 +977,8 @@
             중립은 또박또박 문항에서 글자와 글자 사이에 지나갑니다. 글자로 읽지 않습니다.
             쉬는 자세는 손이 쉴 때의 자세입니다.
           </p>
-          <div class="pad" id="studyRefPad"></div>
+          <!-- 초록 = 글자가 아닌 자세. 중립과 쉬는 자세는 서로 다른 자세다 (R3) -->
+          <div class="cards poses" id="studyRefPad"></div>
         </section>
 
         <div class="row" style="margin-top:2.5rem">
@@ -623,13 +997,15 @@
 
     <!-- 훈련 — practice.html 에서 옮겨 왔다. 흐름은 그대로다 -->
     <main id="trainView" hidden>
-    <header>
-      <span class="learner" id="learner">훈련</span>
+    <header class="trainHead">
+      <span class="who" id="learner">훈련</span>
+      <!-- 진행 막대. 숫자는 옆 줄이 말한다 -->
+      <span class="bar" aria-hidden="true"><span id="trainBar"></span></span>
       <span class="counter" id="counter"></span>
     </header>
 
     <!-- 시작 -->
-    <section id="startPanel">
+    <section id="startPanel" class="card narrow">
       <!-- 답 입력 방법. 세션을 시작할 때 하나를 고르고, 세션 중에는 바꾸지
            않는다 — 바꾸면 응답 시간이 두 방법의 혼합이 된다 (DECISIONS §56) -->
       <fieldset class="modes" id="inputModes">
@@ -656,7 +1032,7 @@
         <button id="rejoinBtn" type="button"></button>
       </div>
       <label for="name">이름</label>
-      <input type="text" id="name" autocomplete="off" style="letter-spacing:normal;text-transform:none">
+      <input type="text" id="name" class="plain" autocomplete="off">
       <div class="row">
         <button class="primary" id="startBtn">세션 시작</button>
       </div>
@@ -665,15 +1041,17 @@
     </section>
 
     <!-- 훈련 -->
-    <!-- 세 상태 — 손이 움직이는 중 / 답할 차례 / 결과 — 를 `data-phase` 로 가른다.
-         색이 아니라 **대비**로 가른다: 손이 움직이는 동안은 화면 전체를 낮춰 시선을
-         손에 두고, 답할 차례에만 입력 칸이 제 대비로 돌아온다 (DECISIONS §57) -->
+    <!-- 상태 — 손이 움직이는 중 / 확인 중 / 답할 차례 / 결과 / 멈춤 — 를 `data-phase`
+         로 가른다. 손이 움직이는 동안은 본문 전체가 어두워지고 상태 하나만 남는다.
+         답할 차례에만 입력이 보인다 (DECISIONS §57, §58) -->
     <section id="trainPanel" hidden data-phase="moving">
       <div class="status">
-        <span class="dot" id="dot"></span>
-        <span class="phase" id="phase">손을 보세요</span>
-        <span id="status">준비 중</span>
-        <button class="stop" id="stopBtn" type="button" hidden>정지</button>
+        <span class="badge"><span class="dot" id="dot"></span><span id="phaseBadge">손이 움직이고 있어요</span></span>
+        <!-- 몇 번째 글자인가. **글자 자체는 적지 않는다** — 그것이 정답이다 -->
+        <span class="glyph word" id="glyph"></span>
+        <span class="phase" id="phase">화면 말고 손을 보세요</span>
+        <span class="line" id="status">준비 중</span>
+        <button class="stop" id="stopBtn" type="button" hidden>멈추기</button>
       </div>
 
       <div class="answerArea">
@@ -710,8 +1088,8 @@
     </section>
 
     <!-- 요약 -->
-    <section id="summaryPanel" hidden>
-      <h2>세션 요약</h2>
+    <section id="summaryPanel" class="card narrow" hidden>
+      <div class="viewHead"><h2>세션 요약</h2></div>
       <p class="note">
         두 트랙은 훈련하는 기술이 다르므로 따로 봅니다. 합친 수치는 내지 않습니다.
         한 번 틀려 다시 본 문항은 두 번 답한 것으로 셉니다.
@@ -732,38 +1110,40 @@
 
     <!-- 내 진행 — 난이도·해금·추이만. 어떤 글자를 틀리는지는 싣지 않는다 (§52) -->
     <main id="progressView" hidden>
-      <header>
-        <span class="learner">내 진행</span>
+      <header class="viewHead">
+        <h2>내 진행</h2>
         <span class="counter" id="progressWho"></span>
       </header>
 
-      <label for="progressName">이름</label>
-      <input type="text" id="progressName" class="plain" autocomplete="off">
-      <div class="row">
-        <button class="primary" id="progressBtn" type="button">보기</button>
+      <div class="card narrow">
+        <label for="progressName">이름</label>
+        <input type="text" id="progressName" class="plain" autocomplete="off">
+        <div class="row">
+          <button class="primary" id="progressBtn" type="button">보기</button>
+        </div>
+        <p class="note" id="progressNote"></p>
+        <p class="error" id="progressError"></p>
       </div>
-      <p class="note" id="progressNote"></p>
-      <p class="error" id="progressError"></p>
 
       <div id="progressBody" hidden>
-        <section class="block">
+        <section class="card block">
           <h2>누적</h2>
           <table id="progressTotals"></table>
         </section>
 
-        <section class="block">
+        <section class="card block">
           <h2>지금 난이도</h2>
           <p class="note">다음 세션은 여기서 시작합니다.</p>
           <table id="progressDifficulty"></table>
         </section>
 
-        <section class="block">
+        <section class="card block">
           <h2>깊이쌍 단계</h2>
           <p id="depthState"></p>
           <table id="depthTable"></table>
         </section>
 
-        <section class="block">
+        <section class="card block">
           <h2>세션별 정확도</h2>
           <p class="note">
             두 트랙은 훈련하는 기술이 다르므로 따로 봅니다. 합친 수치는 내지 않습니다.
@@ -1076,12 +1456,15 @@ function handleEvent(event) {
     case "presenting":
       state.landed = false;
       el("dot").classList.add("live");
+      el("glyph").textContent = "";
       el("status").textContent =
         event.attempt > 1 ? "다시 표현 중 — 천천히 봅니다" : "표현 중";
       setAnswering(false);
       setMoving(true);
       break;
     case "ready":
+      // 어두운 화면의 큰 자리에는 **몇 번째인지만** 적는다. 글자는 정답이다 (§58).
+      el("glyph").textContent = `${event.letter_pos + 1}번째`;
       el("status").textContent = `표현 중 — ${event.letter_pos + 1}번째 글자`;
       break;
     case "done":
@@ -1136,16 +1519,26 @@ function setMoving(moving) {
  * 문구는 상태 줄 앞머리 한 단어다 — 상세는 그 옆의 기존 상태 문구가 말한다.
  */
 const PHASE_LABEL = {
-  moving: "손을 보세요",
+  moving: "화면 말고 손을 보세요",
   answer: "답할 차례",
   result: "결과",
   paused: "멈춤",
   checking: "확인 중",
 };
 
+/** 상태 줄 위의 배지. 손이 지금 어떤지를 말한다 (§58). */
+const PHASE_BADGE = {
+  moving: "손이 움직이고 있어요",
+  answer: "손이 멈췄어요",
+  result: "손이 멈췄어요",
+  paused: "손이 멈췄어요",
+  checking: "확인하고 있어요",
+};
+
 function setPhase(phase) {
   el("trainPanel").dataset.phase = phase;
   el("phase").textContent = PHASE_LABEL[phase] || "";
+  el("phaseBadge").textContent = PHASE_BADGE[phase] || "";
 }
 
 /** 정지 직후의 표시. 문항은 그대로이므로 다시 보기로 이어 간다. */
@@ -1405,7 +1798,7 @@ function renderOpenSession(open) {
   // 고침 전의 내 세션인지는 여기서 모른다 — 참여 자리 문구처럼 중립으로 쓴다.
   show("homeJoinNote", joinable && !declined);
   el("homeJoinNote").textContent = joinable
-    ? "이어서 할 세션이 있습니다 — [훈련 시작] 에서 참여합니다." : "";
+    ? "이어서 할 세션이 있습니다 — [훈련] 에서 참여합니다." : "";
 
   if (!joinable) { el("joinNote").textContent = ""; return; }
 
@@ -1468,6 +1861,7 @@ function abandonSession(message) {
   setMoving(false);
   el("dot").classList.remove("live");
   el("counter").textContent = "";
+  el("trainBar").style.width = "0";
   el("learner").textContent = "훈련";
   show("result", false);
   show("trainPanel", false);
@@ -1690,6 +2084,8 @@ function renderCounter() {
   const track = TRACK_LABEL[p.track] || p.track;
   const length = p.track === "discrimination" ? ` · ${p.length}글자` : "";
   el("counter").textContent = `${p.index} / ${state.total} · ${track}${length}`;
+  el("trainBar").style.width =
+    state.total ? `${Math.min(100, (p.index / state.total) * 100)}%` : "0";
 }
 
 async function present() {
@@ -2622,7 +3018,8 @@ function renderNav() {
     modeBtn.textContent = "교사 모드";
     const locked = teacherLocked();
     modeBtn.disabled = locked;
-    el("modeNote").textContent = locked ? "세션 중에는 열 수 없습니다" : "";
+    // 잠긴 탭(글자 · 교사 모드)의 까닭은 탭 줄 오른쪽 끝에 한 번만 적는다.
+    el("modeNote").textContent = locked ? "세션 중에는 잠깁니다" : "";
   }
 }
 
@@ -2774,23 +3171,38 @@ async function startStudy() {
   renderNav();
 }
 
-/** 글자 버튼. 목록은 서버가 준 것 그대로다 — 순서도 서버 것이다. */
+/**
+ * 글자 카드. 목록은 서버가 준 것 그대로다 — 순서도 서버 것이다.
+ *
+ * 카드에는 글자와 [보기] 만 있다. **손가락 설명을 적지 않는다** — 적으면 어느
+ * 글자끼리 닮았는지가 드러난다 (§56). 파랑은 글자, 초록은 글자가 아닌 자세다.
+ */
 function renderStudyPads(letters, references) {
   const pad = el("studyPad");
   clear(pad);
   for (const letter of letters) {
-    const button = add(pad, "button", null, letter);
-    button.type = "button";
-    button.addEventListener("click", () => showStudy({ letter }, letter));
+    studyCard(pad, "lcard", letter, () => showStudy({ letter }, letter));
   }
+  // 목록 끝을 말하는 칸. 몇 자인지는 서버 목록의 길이다.
+  add(pad, "p", "lcard end", `여기까지 — 이 손이 만들 수 있는 글자는 ${letters.length}자입니다`);
   const refs = el("studyRefPad");
   clear(refs);
   for (const name of references) {
     const label = REFERENCE_LABEL[name] || name;
-    const button = add(refs, "button", "wide", label);
-    button.type = "button";
-    button.addEventListener("click", () => showStudy({ pose: name }, label));
+    studyCard(refs, "lcard pose", label, () => showStudy({ pose: name }, label), "글자 아님");
   }
+}
+
+function studyCard(parent, className, label, onShow, tag) {
+  const card = add(parent, "div", className);
+  if (tag) add(card, "span", "tag", tag);
+  add(card, "span", "big", label);
+  add(card, "hr");
+  const button = add(card, "button", "see", "보기");
+  button.type = "button";
+  button.setAttribute("aria-label", `${label} 보기`);
+  button.addEventListener("click", onShow);
+  return card;
 }
 
 /**
@@ -2801,7 +3213,8 @@ function renderStudyPads(letters, references) {
 function setStudyBusy(busy) {
   study.busy = busy;
   el("studyPanel").dataset.phase = busy ? "moving" : "ready";
-  el("studyPhase").textContent = busy ? "손을 보세요" : "누를 차례";
+  el("studyPhase").textContent = busy ? PHASE_LABEL.moving : "누를 차례";
+  el("studyBadge").textContent = busy ? PHASE_BADGE.moving : PHASE_BADGE.answer;
   for (const button of document.querySelectorAll("#studyPad button, #studyRefPad button")) {
     button.disabled = busy;
   }
@@ -2813,6 +3226,9 @@ function setStudyBusy(busy) {
 async function showStudy(body, label) {
   if (study.busy || !study.sessionId) return;
   setStudyError("");
+  // 어두운 화면의 큰 자리. 공부에서는 누른 것을 그대로 적는다 — 알고 누른 것이다.
+  el("studyGlyph").textContent = label;
+  el("studyGlyph").classList.toggle("word", !("letter" in body));
   setStudyBusy(true);
   el("studyStatus").textContent = `표현 중 — ${label}`;
   try {
@@ -2919,9 +3335,29 @@ async function resetFromStudy() {
   }
 }
 
+/**
+ * 머리 줄의 글자 수와 홈의 글자 줄. 목록은 서버 것이다 — 글자도 글자 수도
+ * 여기 박지 않는다 (§56, §57). 받지 못하면 둘 다 비워 둔다.
+ */
+async function renderLetterSet() {
+  let letters;
+  try {
+    letters = await loadLetters();
+  } catch (err) {
+    console.warn("could not load the letters", err);
+    return;
+  }
+  el("letterCount").textContent = `${letters.length}자`;
+  show("letterCount", true);
+  const row = el("homeTiles");
+  clear(row);
+  for (const letter of letters) add(row, "li", null, letter);
+}
+
 el("studyStartBtn").addEventListener("click", startStudy);
 el("homeStudyBtn").addEventListener("click", () => showView("study"));
 el("homeTrainBtn").addEventListener("click", () => showView("train"));
+el("homeProgressBtn").addEventListener("click", () => showView("progress"));
 el("studyName").addEventListener("keydown", (e) => { if (e.key === "Enter") startStudy(); });
 el("studyEndBtn").addEventListener("click", endStudy);
 el("studyStopBtn").addEventListener("click", stopStudyMotion);
@@ -3121,6 +3557,7 @@ el("progressName").addEventListener("keydown", (e) => { if (e.key === "Enter") l
 // 기동 시점에는 세션을 쥐고 있지 않으므로 잠금에 걸리지 않는다.
 setMode(new URLSearchParams(location.search).get("mode") === "teacher"
   ? "teacher" : "learner");
+renderLetterSet();
 
 </script>
 </body>

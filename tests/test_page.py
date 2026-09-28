@@ -27,6 +27,16 @@ def _strings(block):
     return [re.sub(r"\$\{[^}]*\}", "", a or b) for a, b in found]
 
 
+def _style(body):
+    """`<style>` 안쪽. 주석은 뺀다."""
+    return re.sub(r"/\*.*?\*/", "", body[body.index("<style>"):body.index("</style>")], flags=re.S)
+
+
+def _rules(style):
+    """`(선택자, 선언)` 쌍. 중첩은 `@font-face`·`@media` 한 겹뿐이라 안쪽 규칙만 본다."""
+    return re.findall(r"([^{}]+)\{([^{}]*)\}", style)
+
+
 def _function(body, name):
     start = body.index(f"function {name}(")
     return body[start:body.index("\n}\n", start)]
@@ -47,7 +57,8 @@ def test_learner_markup_shows_no_developer_text(client):
 def test_learner_message_tables_are_plain_korean(client):
     """거부 문구·상태 문구·결과 문구 표에 영어가 없다. 코드는 **키**에만 있다."""
     body = _page(client)
-    for table in ("REJECTION_TEXT", "RESULT_LABEL", "PHASE_LABEL", "REFERENCE_LABEL"):
+    for table in ("REJECTION_TEXT", "RESULT_LABEL", "PHASE_LABEL", "PHASE_BADGE",
+                  "REFERENCE_LABEL"):
         for text in _strings(_block(body, table)):
             assert not re.search(r"[A-Za-z_]", text), (table, text)
     fallback = re.search(r'const FALLBACK_TEXT =\s*"([^"]*)"', body).group(1)
@@ -120,7 +131,7 @@ def test_the_three_states_are_marked_without_motion(client):
     assert len(phases) >= 3
     for phase in ("moving", "answer", "result"):
         assert f'[data-phase="{phase}"]' in body, phase
-    style = re.sub(r"/\*.*?\*/", "", body[body.index("<style>"):body.index("</style>")], flags=re.S)
+    style = _style(body)
     for motion in ("transition", "animation", "@keyframes"):
         assert motion not in style, motion
 
@@ -140,3 +151,77 @@ def test_only_the_estimate_is_folded_away(client):
     """접는 것은 "읽지 않아도 된다" 는 단언이다. 좁게 둔다 (§57)."""
     body = _page(client)
     assert 'const INTERNAL_CHECKS = new Set(["estimated_seconds"]);' in body
+
+
+# --------------------------------------------------------------------------- #
+# 손이 움직이는 동안 — 본문이 어두워진다 (§57 → §58)
+# --------------------------------------------------------------------------- #
+
+def test_the_screen_goes_dark_while_the_hand_moves(client):
+    """공부·훈련 패널이 `moving` 이면 본문 전체가 밤색이 되고 상태 하나만 남는다.
+    탭 줄의 비활성 항목도 회색으로 내린다."""
+    body = _page(client)
+    style = _style(body)
+    assert "--night: #1B2331;" in style
+    rules = _rules(style)
+
+    dark = [sel for sel, decl in rules
+            if '[data-phase="moving"]' in sel and "background: var(--night)" in decl]
+    assert any(".content" in sel for sel in dark), "본문 영역이 어두워지지 않는다"
+
+    hidden = [sel for sel, decl in rules
+              if '[data-phase="moving"]' in sel and "display: none" in decl]
+    assert any(":not(.status)" in sel for sel in hidden), "움직이는 동안 입력이 남는다"
+
+    grey = [sel for sel, decl in rules
+            if '[data-phase="moving"]' in sel and ".navItem" in sel and "var(--text-3)" in decl]
+    assert grey, "탭 줄이 그대로 밝다"
+
+    # 두 패널이 실제로 그 상태에 들어간다.
+    assert 'setPhase("moving")' in _function(body, "setMoving")
+    assert 'dataset.phase = busy ? "moving"' in _function(body, "setStudyBusy")
+
+
+def test_the_dark_screen_never_shows_the_training_letter(client):
+    """훈련의 큰 자리에는 몇 번째인지만 적는다. 글자를 적으면 정답이다."""
+    body = _page(client)
+    learner_script = body[body.index("<script>"):body.index("// 교사 모드 — teacher.html")]
+    writes = [line.strip() for line in learner_script.splitlines()
+              if 'el("glyph")' in line]
+    assert writes
+    for line in writes:
+        assert line in ('el("glyph").textContent = "";',
+                        'el("glyph").textContent = `${event.letter_pos + 1}번째`;'), line
+
+
+def test_the_learner_design_uses_edges_not_shadows(client):
+    """입체감은 아래 테두리로 낸다. 그림자·그라데이션·흐림이 없다 (§57, §58)."""
+    style = _style(_page(client))
+    for effect in ("box-shadow", "text-shadow", "gradient", "blur", "filter:"):
+        assert effect not in style, effect
+    assert "border-bottom: 6px solid var(--letter-edge)" in style
+
+
+# --------------------------------------------------------------------------- #
+# 글꼴과 글자 수 — 밖에서 받지 않고, 박지 않는다
+# --------------------------------------------------------------------------- #
+
+def test_the_fonts_are_served_by_the_station(client):
+    """발표장에 인터넷이 없어도 같은 화면이다. 외부 주소를 부르지 않는다 (§58)."""
+    body = _page(client)
+    assert "http://" not in _style(body) and "https://" not in _style(body)
+    assert "<link" not in body
+    fonts = re.findall(r'url\("(fonts/[^"]+\.woff2)"\)', body)
+    assert len(fonts) >= 7
+    for path in fonts:
+        response = client.get(f"/{path}")
+        assert response.status_code == 200, path
+        assert response.content[:4] == b"wOF2", path
+
+
+def test_the_letter_count_comes_from_the_server(client, config):
+    """머리 줄의 "N자" 와 글자 칸 끝의 안내는 서버 목록의 길이다 (§56, §57)."""
+    body = _page(client)
+    assert f"{len(config.poses)}자" not in body
+    assert "${letters.length}자" in _function(body, "renderLetterSet")
+    assert "${letters.length}자입니다" in _function(body, "renderStudyPads")
