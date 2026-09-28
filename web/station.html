@@ -14,7 +14,12 @@
      아래로 가둔다. 머리 줄·탭 줄은 두 모드가 같이 쓴다.
 
      학습자 쪽 디자인은 §58 의 시안이다. 입체감은 그림자가 아니라 **아래 테두리**로
-     낸다. box-shadow · gradient · blur · transition · animation 을 쓰지 않는다 (§57). */
+     낸다. box-shadow · gradient · blur 를 쓰지 않는다 (§57). 교사 쪽도 같은 시각
+     언어다 (§59).
+
+     움직임(transition · animation)은 **손이 멈춘 화면에서만**, 그중 홈에만 둔다.
+     손이 움직이는 동안(`data-phase="moving"`)과 훈련·글자 화면에는 없다 — PRD 14.1
+     "시선은 로봇손에" (§57 → §59). */
 
   /* 글꼴은 이 서버가 낸다 (`web/fonts/`, OFL). 발표장에 인터넷이 없어도 같은
      화면이어야 하고, 화면이 외부 주소를 부르지 않는다 (§58). 한글 음절·
@@ -673,21 +678,83 @@
   #learnerMode .block .cards { margin-top: var(--sp-4); }
   #learnerMode .card.block { margin-top: var(--sp-6); }
 
+  /* ---- 용어 풀이 · 입력 방법 설명 (§59) --------------------------------
+     표 위의 짧은 목록. 흰 카드 위라 보조색을 쓴다. */
+  #learnerMode :is(.terms, .modeHelp) {
+    margin: var(--sp-2) 0 var(--sp-3);
+    padding-left: var(--sp-6);
+    color: var(--text-3);
+    font-size: 0.95rem;
+  }
+  #learnerMode :is(.terms, .modeHelp) li { margin-bottom: var(--sp-1); }
+  #learnerMode :is(.terms, .modeHelp) strong { color: var(--text); font-weight: 800; }
+  #learnerMode .modeHelp { margin-top: var(--sp-1); }
+  #homeView .order {
+    margin: 0 auto var(--sp-6);
+    text-align: center;
+    font-weight: 700;
+    color: var(--text-2);
+  }
+  #homeView .order strong { color: var(--blue-edge); font-weight: 900; }
+
+  /* ---- 움직임 — 홈에만, 손이 멈춘 동안에만 (§59) ------------------------
+     화면이 보일 때 한 번 떠오른다. 0.3초 이하, 반복 없음. 숨었다 다시 보이면
+     다시 한 번 — 화면을 옮겼다는 표시다. 메뉴 행은 누를 수 있다는 것을 올라옴으로
+     말한다. 깊이는 여전히 아래 테두리다. */
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: none; }
+  }
+  #homeView :is(.hero, .lead, .order, .menuRow, .guide, .tileRow) { animation: rise 0.3s ease-out backwards; }
+  #homeView .lead { animation-delay: 0.04s; }
+  #homeView .order { animation-delay: 0.08s; }
+  #homeView .menuRow:nth-child(1) { animation-delay: 0.12s; }
+  #homeView .menuRow:nth-child(2) { animation-delay: 0.16s; }
+  #homeView .menuRow:nth-child(3) { animation-delay: 0.2s; }
+  #homeView :is(.guide, .tileRow) { animation-delay: 0.24s; }
+  #homeView .menuRow { transition: transform 0.15s ease-out; }
+  #homeView .menuRow:hover { transform: translateY(-2px); }
+  #homeView .menuRow:active { transform: translateY(2px); }
+
+  /* 손이 움직이는 동안은 **어느 화면에서든** 움직임이 없다. 훈련 중에 홈 탭으로
+     가도 손은 움직이고 있을 수 있다 — 그래서 보이는 화면이 아니라 "움직이는 패널이
+     있는가" 로 끈다. 훈련·글자 화면은 늘 끈다 (문항 화면은 학습자가 판단하는 중이다). */
+  #learnerMode:has([data-phase="moving"]:not([hidden])) *,
+  #learnerMode [data-phase="moving"],
+  #learnerMode [data-phase="moving"] *,
+  #trainView, #trainView *,
+  #studyView, #studyView * {
+    animation: none !important;
+    transition: none !important;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+  }
+
   /* ==== 교사 모드 ========================================================
      학습자 모드와 목적이 다르다. 저쪽은 시선을 로봇손에 두기 위해 화면을
      억제하지만, 이쪽은 **읽히는 것이 목적**이다 — MCP 호출 로그가 시연 ⑥ 의
      핵심이고 발표장 뒤에서도 보여야 한다 (PRD 14.2).
-     그래서 색 토큰은 같은 것을 쓰고 글자 크기만 키운다. */
-  #teacherMode { padding: 2rem 1.5rem 4rem; }
+     모양은 학습자 화면과 같은 시각 언어다 (§59) — 같은 색 토큰·글꼴, 굵은 테두리 +
+     진한 아래 테두리 카드, 아래가 진한 버튼, 여백 일곱 단계. 규칙은 여전히
+     `#teacherMode` 아래에 가둔다. 움직임은 없다. */
+  #teacherMode {
+    --tag-w: 5.5rem;             /* 검증 줄의 꼬리표 폭. 둘째 줄이 여기서 시작한다 */
+    flex: 1;
+    padding: var(--sp-8) var(--sp-6) var(--sp-12);
+    background: var(--sky-train);
+    color: var(--text);
+    font: 500 1rem/1.6 var(--sans);
+  }
   #teacherMode .tgrid {
     width: 100%;
     max-width: 78rem;
     margin: 0 auto;
     display: grid;
-    gap: 2rem;
+    gap: var(--sp-6);
     grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr);
   }
-  #teacherMode .tsingle { width: 100%; max-width: 44rem; margin: 0 auto; }
+  #teacherMode .tsingle { width: 100%; max-width: 52rem; margin: 0 auto; }
   /* 좁은 화면에서는 한 줄로 쌓고 **로그를 먼저** 둔다. */
   @media (max-width: 62rem) {
     #teacherMode .tgrid { grid-template-columns: minmax(0, 1fr); }
@@ -696,156 +763,261 @@
 
   #teacherMode .theader {
     max-width: 78rem;
-    margin: 0 auto 2rem;
+    margin: 0 auto var(--sp-6);
+    display: grid;
+    gap: var(--sp-4);
+  }
+  #teacherMode .titleRow {
     display: flex;
     justify-content: space-between;
-    align-items: baseline;
+    align-items: center;
     flex-wrap: wrap;
-    gap: 1rem;
-    padding-bottom: 0.75rem;
-    border-bottom: 1px solid var(--line);
+    gap: var(--sp-3);
   }
-  #teacherMode h1 { font-size: 1.15rem; margin: 0; }
-  #teacherMode h2 { font-size: 1rem; margin: 0 0 0.75rem; }
-  #teacherMode .conn { color: var(--muted); font-size: 0.9rem; display: flex; align-items: center; gap: 0.5rem; }
-
-  /* 스테이션 한 줄. Mock 인지 실기인지, 펌웨어 해시가 맞는지, 락을 누가 쥐었는지 —
-     손이 왜 안 움직이는지 찾을 때 가장 먼저 봐야 하는 것들이다
-     (PRD 11장 `/api/device/status`). */
-  #teacherMode .station {
-    color: var(--muted);
+  #teacherMode h1 { margin: 0; font: 400 2rem/1.2 var(--display); color: var(--text); }
+  #teacherMode h2 { margin: 0 0 var(--sp-2); font: 900 1.2rem/1.3 var(--sans); color: var(--text); }
+  #teacherMode h3 { margin: 0 0 var(--sp-1); font: 800 1rem/1.4 var(--sans); color: var(--text); }
+  #teacherMode h3.sub { margin-top: var(--sp-6); }
+  /* 하늘 바탕 위의 설명은 #4A5462 — 보조 #6C7585 는 흰 카드 위에서만 (§58) */
+  #teacherMode .theader > .lede { margin: 0; color: var(--text-2); }
+  #teacherMode .conn {
+    display: flex; align-items: center; gap: var(--sp-2);
+    padding: var(--sp-1) var(--sp-3);
+    border-radius: 999px;
+    background: var(--navy);
+    color: #fff;
+    font-weight: 700;
     font-size: 0.9rem;
-    display: flex;
-    gap: 0.9rem;
-    flex-wrap: wrap;
-    font-variant-numeric: tabular-nums;
   }
-  #teacherMode .station .serial { color: var(--ink); font-weight: 600; }
-  #teacherMode .station .bad { color: var(--block); font-weight: 700; }
-  #teacherMode .dot { width: 0.55rem; height: 0.55rem; border-radius: 50%; background: var(--line); flex: none; }
-  #teacherMode .dot.live { background: var(--ok); }
+  #teacherMode .dot { width: 0.6rem; height: 0.6rem; border-radius: 50%; background: var(--text-3); flex: none; }
+  #teacherMode .dot.live { background: var(--grass); }
+
+  /* ---- 로봇손 상태 ------------------------------------------------------
+     교사가 쓸 문장이 위, 원래 값(모드·해시·대조 상태·락)은 접힌 상세 (§59).
+     손이 왜 안 움직이는지 찾을 때 가장 먼저 보는 카드다 (PRD 11장). */
+  #teacherMode .station {
+    list-style: none;
+    margin: var(--sp-3) 0 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2) var(--sp-3);
+  }
+  #teacherMode .station li {
+    padding: var(--sp-2) var(--sp-3);
+    border: 2px solid var(--letter-line);
+    border-bottom-width: 4px;
+    border-radius: 12px;
+    background: #fff;
+    font-weight: 700;
+  }
+  #teacherMode .station li.serial { border-color: var(--blue); }
+  #teacherMode .station li.bad { border-color: var(--block); color: var(--block); }
+  /* 교사가 행동해야 하는 상태. 화면에서 가장 큰 글자다. */
+  #teacherMode .alarm {
+    margin: var(--sp-3) 0 0;
+    padding: var(--sp-4);
+    border: 3px solid var(--block);
+    border-bottom-width: 6px;
+    border-radius: 14px;
+    background: var(--block-bg);
+    color: var(--block);
+    font: 900 1.3rem/1.4 var(--sans);
+  }
+  #teacherMode .alarm .sub { display: block; margin-top: var(--sp-1); font: 700 1rem/1.5 var(--sans); color: var(--text); }
+  #teacherMode dl.raw {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: var(--sp-1) var(--sp-4);
+    margin: var(--sp-2) 0 0;
+    font-size: 0.9rem;
+  }
+  #teacherMode dl.raw dt { color: var(--text-3); }
+  #teacherMode dl.raw dd { margin: 0; font: 0.9rem/1.5 ui-monospace, Consolas, monospace; overflow-wrap: anywhere; }
 
   #teacherMode section { min-width: 0; }
   #teacherMode .card {
     background: #fff;
-    border: 1px solid var(--line);
-    border-radius: 2px;
-    padding: 1.25rem;
+    border: 2px solid var(--letter-line);
+    border-bottom: 6px solid var(--letter-edge);
+    border-radius: 18px;
+    padding: var(--sp-6);
   }
-  #teacherMode .card + .card { margin-top: 1.5rem; }
+  #teacherMode .card + .card { margin-top: var(--sp-6); }
+  #teacherMode .card > :first-child { margin-top: 0; }
+  #teacherMode .card > :last-child { margin-bottom: 0; }
 
-  #teacherMode label { display: block; margin-bottom: 0.35rem; color: var(--muted); font-size: 0.9rem; }
+  #teacherMode label { display: block; margin-bottom: var(--sp-1); color: var(--text); font-weight: 800; }
+  /* 칸 아래 한 줄 설명 */
+  #teacherMode .hint { margin: var(--sp-1) 0 0; color: var(--text-3); font-size: 0.9rem; }
   #teacherMode input[type="text"], #teacherMode input[type="number"], #teacherMode textarea {
     width: 100%;
-    padding: 0.6rem 0.75rem;
-    font: inherit;
-    border: 1px solid var(--line);
-    border-radius: 2px;
+    min-height: 48px;
+    padding: var(--sp-2) var(--sp-3);
+    font: 600 1rem/1.5 var(--sans);
+    border: 2px solid var(--letter-line);
+    border-bottom: 5px solid var(--letter-edge);
+    border-radius: 12px;
     background: #fff;
-    color: var(--ink);
+    color: var(--text);
   }
-  #teacherMode textarea { resize: vertical; min-height: 4.5rem; }
-  #teacherMode input:focus, #teacherMode textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
-  #teacherMode .fields { display: grid; gap: 0.75rem; }
-  #teacherMode .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; }
+  #teacherMode textarea { resize: vertical; min-height: 5rem; }
+  #teacherMode input:focus, #teacherMode textarea:focus { outline: 3px solid var(--blue); outline-offset: 2px; }
+  #teacherMode .fields { display: grid; gap: var(--sp-4); margin-top: var(--sp-4); }
+  #teacherMode .pair { display: grid; grid-template-columns: 1fr 1fr; gap: var(--sp-3); }
 
-  #teacherMode .row { display: flex; gap: 0.5rem; margin-top: 1rem; flex-wrap: wrap; align-items: center; }
+  #teacherMode .row { display: flex; gap: var(--sp-3); margin-top: var(--sp-4); flex-wrap: wrap; align-items: center; }
+  /* 줄 안에서 버튼 아래로 내려가는 설명 */
+  #teacherMode .row > .full { flex-basis: 100%; margin: 0; }
   #teacherMode button {
-    font: inherit;
-    padding: 0.55rem 1.1rem;
-    border: 1px solid var(--line);
-    border-radius: 2px;
+    min-height: 48px;
+    padding: 0 var(--sp-6);
+    border: 2px solid var(--letter-line);
+    border-bottom: 5px solid var(--letter-edge);
+    border-radius: 12px;
     background: #fff;
-    color: var(--ink);
+    color: var(--text);
+    font: 800 1rem/1.2 var(--sans);
     cursor: pointer;
   }
-  #teacherMode button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-  #teacherMode button.danger { color: var(--block); border-color: var(--block); }
-  #teacherMode button:disabled { opacity: 0.4; cursor: default; }
+  #teacherMode button.primary {
+    background: var(--green);
+    border-color: var(--green);
+    border-bottom-color: var(--green-edge);
+    color: #fff;
+  }
+  #teacherMode button.danger { color: var(--block); border-color: var(--block); border-bottom-color: var(--block); }
+  #teacherMode button:disabled { opacity: 0.45; cursor: default; }
+  #teacherMode button:focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
   #teacherMode button.toggle[aria-pressed="true"] {
-    background: var(--accent); color: #fff; border-color: var(--accent);
+    background: var(--blue); color: #fff; border-color: var(--blue); border-bottom-color: var(--blue-edge);
   }
 
-  #teacherMode table { border-collapse: collapse; width: 100%; }
-  #teacherMode caption { text-align: left; color: var(--muted); font-size: 0.9rem; padding-bottom: 0.4rem; }
-  #teacherMode th, #teacherMode td { text-align: left; padding: 0.35rem 0.6rem 0.35rem 0; border-bottom: 1px solid var(--line); }
-  #teacherMode th { color: var(--muted); font-weight: 400; font-size: 0.9rem; }
-  #teacherMode td { font-variant-numeric: tabular-nums; }
-  #teacherMode td.letters { letter-spacing: 0.2em; font-weight: 600; }
+  #teacherMode table { border-collapse: collapse; width: 100%; margin-top: var(--sp-3); }
+  #teacherMode caption { text-align: left; color: var(--text); font-weight: 800; padding-bottom: var(--sp-2); }
+  #teacherMode th, #teacherMode td {
+    text-align: left;
+    padding: var(--sp-2) var(--sp-3) var(--sp-2) 0;
+    border-bottom: 2px solid var(--sky-study);
+  }
+  #teacherMode th { color: var(--text-3); font-weight: 500; font-size: 0.9rem; }
+  #teacherMode td { font-weight: 700; font-variant-numeric: tabular-nums; }
+  #teacherMode td.letters { font: 600 1.15rem var(--latin); letter-spacing: 0.2em; }
 
-  #teacherMode .note { color: var(--muted); font-size: 0.9rem; }
-  #teacherMode .empty { color: var(--muted); padding: 1rem 0; }
-  #teacherMode .error { color: var(--block); margin-top: 0.75rem; }
+  #teacherMode .note { color: var(--text-3); font-size: 0.9rem; }
+  #teacherMode .note:empty { display: none; }
+  #teacherMode .empty { color: var(--text-3); padding: var(--sp-4) 0; }
+  #teacherMode .error { color: var(--block); font-weight: 700; margin-top: var(--sp-3); }
+  #teacherMode .error:empty { display: none; }
+  /* 거부 안내 아래의 코드·서버 원문. 옮겨 적는 용도라 고정폭으로 작게 둔다 (§45, §59). */
+  #teacherMode .rawline {
+    margin: var(--sp-1) 0 0;
+    color: var(--text-3);
+    font: 0.8rem/1.4 ui-monospace, Consolas, monospace;
+    overflow-wrap: anywhere;
+  }
+  #teacherMode .rawline:empty { display: none; }
+
+  /* 용어 풀이 · 읽는 법 */
+  #teacherMode .terms { margin: var(--sp-2) 0 0; padding-left: var(--sp-6); color: var(--text-3); font-size: 0.9rem; }
+  #teacherMode .terms li { margin-bottom: var(--sp-1); }
+  #teacherMode .terms strong { color: var(--text); font-weight: 800; }
 
   /* ---- 승인 대기 배너 ---------------------------------------------------
      시연 ⑥ 의 "라이브 정지" 항목이다. **검증을 통과해도 실행되지 않았다**는
      것이 화면에서 보여야 하므로, 근거(session_id 가 비어 있음)를 함께 띄운다. */
   #teacherMode .verdict {
-    padding: 0.85rem 1rem;
-    border-left: 4px solid var(--line);
-    background: var(--paper);
+    margin-top: var(--sp-6);
+    padding: var(--sp-4);
+    border: 2px solid var(--letter-line);
+    border-left: 6px solid var(--letter-edge);
+    border-radius: 12px;
+    background: var(--sky-train);
     font-size: 1.05rem;
   }
-  #teacherMode .verdict strong { display: block; font-size: 1.15rem; }
-  #teacherMode .verdict.pending { border-left-color: var(--block); background: var(--block-bg); }
-  #teacherMode .verdict.approved { border-left-color: var(--ok); }
-  #teacherMode .verdict code { font-size: 0.95rem; color: var(--muted); }
+  #teacherMode .verdict strong { display: block; font: 900 1.2rem/1.4 var(--sans); }
+  #teacherMode .verdict.pending { border-color: var(--block); background: var(--block-bg); }
+  #teacherMode .verdict.approved { border-color: var(--green); }
+  #teacherMode .verdict code { font-size: 0.95rem; color: var(--text-3); }
 
-  #teacherMode .finding { font-size: 0.9rem; padding: 0.2rem 0; }
+  #teacherMode .finding { font-size: 0.95rem; padding: var(--sp-1) 0; }
   #teacherMode .finding .tag {
-    display: inline-block; min-width: 5.5rem;
-    color: var(--muted); font-variant-numeric: tabular-nums;
+    display: inline-block; min-width: var(--tag-w);
+    color: var(--text-3); font-weight: 800; font-variant-numeric: tabular-nums;
   }
   #teacherMode .finding.removed .tag, #teacherMode .finding.regenerate .tag { color: var(--block); }
-  #teacherMode .finding .detail { color: var(--muted); }
+  #teacherMode .finding .detail { color: var(--text-3); }
   /* 둘째 줄: 코드와 서버 원문. 옮겨 적는 용도라 고정폭으로 작게 둔다 (§45). */
   #teacherMode .finding .code {
-    margin: 0.1rem 0 0.35rem 5.5rem;
-    color: var(--muted);
+    margin: 0 0 var(--sp-1) var(--tag-w);
+    color: var(--text-3);
     font: 0.8rem/1.4 ui-monospace, Consolas, monospace;
     overflow-wrap: anywhere;
   }
-  #teacherMode .finding .letters { font-weight: 600; letter-spacing: 0.1em; }
+  #teacherMode .finding .letters { font-family: var(--latin); font-weight: 700; letter-spacing: 0.1em; }
 
   /* ---- 검증 결과 — 조치할 것과 참고만 할 것 -----------------------------
      교사가 손 쓸 수 있는 항목(제거·보정·경고)과 내부 추정치를 같은 크기로
      늘어놓으면, 읽을 것이 없는 줄이 읽어야 할 줄을 밀어낸다. 내부 정보는
      접어 두고 회색으로 낮춘다. 지우지는 않는다 — 원문은 펼치면 나온다. */
-  #teacherMode .findingGroup + .findingGroup { margin-top: 0.9rem; }
-  #teacherMode .findingGroup > h3 {
-    margin: 0 0 0.3rem; font-size: 0.9rem; font-weight: 600; color: var(--ink);
-  }
-  #teacherMode details.internal { margin-top: 0.9rem; }
+  #teacherMode .findingGroup + .findingGroup { margin-top: var(--sp-4); }
+  #teacherMode .findingGroup > h3 { margin: 0 0 var(--sp-1); font-size: 0.95rem; }
+  #teacherMode details.internal { margin-top: var(--sp-4); }
   #teacherMode details.internal > summary {
-    cursor: pointer; color: var(--muted); font-size: 0.85rem;
+    cursor: pointer; color: var(--text-3); font-size: 0.9rem; font-weight: 700;
   }
   #teacherMode details.internal .finding,
-  #teacherMode details.internal .finding .tag { color: var(--muted); }
+  #teacherMode details.internal .finding .tag { color: var(--text-3); }
 
   /* ---- 승인 실패 뒤의 복구 ---------------------------------------------
      거부 코드만 띄우면 교사는 무엇을 하면 되는지 알 수 없다. 원인별 다음
      동작을 한 줄로 적고, 락이 물린 경우에만 해제를 내놓는다.
      학습자 모드와 같은 모양·같은 두 번 누르기다 (DECISIONS §45). */
-  #teacherMode .recovery { margin-top: 0.75rem; }
+  #teacherMode .recovery { margin-top: var(--sp-3); }
   #teacherMode .recovery button {
-    padding: 0.3rem 0;
+    min-height: 44px;
+    padding: 0;
     border: 0;
     background: none;
-    color: var(--muted);
-    font-size: 0.85rem;
+    color: var(--text-2);
+    font-size: 0.9rem;
     text-decoration: underline;
   }
-  #teacherMode .recovery button.armed { color: var(--block); text-decoration: none; font-weight: 600; }
-  #teacherMode .recovery .note { display: inline; margin-left: 0.6rem; }
+  #teacherMode .recovery button.armed { color: var(--block); text-decoration: none; }
+  #teacherMode .recovery .note { display: inline; margin-left: var(--sp-3); }
 
   /* ---- MCP 호출 로그 ---------------------------------------------------
      발표장 뒤에서 읽혀야 한다. 본문보다 크게 두고, blocked 는 한 눈에 갈리게
      한다 (PRD 14.2, 15.2). */
-  #teacherMode #logPanel .card { padding-bottom: 0.5rem; }
-  #teacherMode .logHead { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; }
+  #teacherMode .logHead { display: flex; justify-content: space-between; align-items: baseline; gap: var(--sp-4); }
+  #teacherMode .logHead .count { font: 800 1rem var(--sans); color: var(--text-2); font-variant-numeric: tabular-nums; }
+  /* 줄 종류 풀이. 로그 줄과 같은 색의 작은 견본이다. */
+  #teacherMode .legend {
+    list-style: none;
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--sp-2) var(--sp-4);
+    margin: var(--sp-3) 0 0;
+    padding: 0;
+    font-size: 0.85rem;
+    color: var(--text-3);
+  }
+  #teacherMode .legend li::before {
+    content: "";
+    display: inline-block;
+    width: 0.8rem;
+    height: 0.8rem;
+    margin-right: var(--sp-1);
+    vertical-align: -0.1rem;
+    border-radius: 3px;
+    background: var(--text);
+  }
+  #teacherMode .legend .l-result::before { background: var(--text-3); }
+  #teacherMode .legend .l-plan::before { background: var(--green); }
+  #teacherMode .legend .l-blocked::before { background: var(--block); }
   #teacherMode .log {
     list-style: none;
-    margin: 1rem 0 0;
+    margin: var(--sp-4) 0 0;
     padding: 0;
     max-height: 42rem;
     overflow-y: auto;
@@ -853,31 +1025,33 @@
   /* 최신이 위다. 자동 스크롤을 두지 않으려는 것이다 — 시연 중에 화면이 스스로
      움직이면 읽는 쪽이 따라가지 못한다. */
   #teacherMode .log li {
-    border-top: 1px solid var(--line);
-    padding: 0.6rem 0;
+    border-top: 2px solid var(--sky-study);
+    padding: var(--sp-3) 0;
     font-size: 1.05rem;
     display: grid;
     grid-template-columns: 4.5rem minmax(0, 1fr);
-    gap: 0.75rem;
+    gap: var(--sp-3);
   }
   #teacherMode .log li:first-child { border-top: 0; }
-  #teacherMode .log .when { color: var(--muted); font-size: 0.85rem; font-variant-numeric: tabular-nums; }
-  #teacherMode .log .name { font-weight: 600; }
-  #teacherMode .log .summary { color: var(--muted); }
-  #teacherMode .log li.result .name { font-weight: 400; color: var(--muted); }
+  #teacherMode .log .when { color: var(--text-3); font-size: 0.85rem; font-variant-numeric: tabular-nums; }
+  #teacherMode .log .name { font-weight: 800; }
+  #teacherMode .log .summary { color: var(--text-2); }
+  #teacherMode .log li.result .name { font-weight: 500; color: var(--text-2); }
   #teacherMode .log li.blocked {
     background: var(--block-bg);
-    border-left: 4px solid var(--block);
-    padding-left: 0.75rem;
+    border: 2px solid var(--block);
+    border-left-width: 6px;
+    border-radius: 12px;
+    padding-left: var(--sp-3);
     font-size: 1.2rem;
   }
   #teacherMode .log li.blocked .reason {
     color: var(--block);
-    font-weight: 700;
+    font-weight: 900;
     letter-spacing: 0.02em;
   }
-  #teacherMode .log li.blocked .detail { color: var(--ink); font-size: 1rem; }
-  #teacherMode .log li.plan .name { color: var(--ok); font-weight: 600; }
+  #teacherMode .log li.blocked .detail { color: var(--text); font-size: 1rem; }
+  #teacherMode .log li.plan .name { color: var(--green); font-weight: 800; }
 </style>
 </head>
 <body>
@@ -900,11 +1074,11 @@
     <!-- 교사 모드의 화면들. 학습자 모드에서는 숨는다 -->
     <div class="navGroup" id="teacherNav" hidden>
       <div class="navLabel">교사</div>
-      <button class="navItem" type="button" data-view="plan">계획 · 로그</button>
-      <button class="navItem" type="button" data-view="confusion">혼동 행렬</button>
+      <button class="navItem" type="button" data-view="plan" title="훈련 계획을 만들고 승인하며, 에이전트의 호출 기록을 봅니다">계획 · 로그</button>
+      <button class="navItem" type="button" data-view="confusion" title="학습자들이 서로 바꿔 읽은 글자 쌍을 트랙별로 봅니다">혼동 행렬</button>
       <!-- 통합하지 않는다. 손을 보면서 화면을 조작하려면 창이 따로 있어야 한다.
            실기가 붙으면 실물을 보므로 발표 폴백일 때만 띄운다 (PRD 6.3) -->
-      <button class="navTool" type="button" id="mockhandBtn">Mock 손 — 새 창</button>
+      <button class="navTool" type="button" id="mockhandBtn" title="실물 손이 없을 때 화면에 그린 손을 새 창으로 띄웁니다">모의 손 화면 (새 창)</button>
       <p class="navNote" id="mockhandNote"></p>
     </div>
 
@@ -924,10 +1098,14 @@
          다 알 수 있게 한다. 길게 쓰지 않는다 — 읽고 바로 시작한다 (DECISIONS §57) -->
     <main id="homeView">
       <h2 class="hero">지문자 읽기 훈련</h2>
+      <!-- 무엇인가 — 2~3문장. 만드는 연습이 아니라 읽는 연습이다 (§57, §59) -->
       <p class="lead">
-        로봇손이 영어 지문자를 만들면, 그것을 보고 어떤 글자인지 읽어 입력합니다.<br>
-        손으로 만드는 법이 아니라 <strong>남의 손을 읽는 법</strong>을 훈련합니다.
+        로봇손이 미국 수어의 지문자(손가락으로 쓰는 알파벳)를 한 글자씩 만듭니다.<br>
+        여러분은 그 손을 보고 어떤 글자인지 읽어 답합니다.<br>
+        손으로 만드는 법이 아니라 <strong>남의 손을 읽는 법</strong>을 연습하는 곳입니다.
       </p>
+      <!-- 처음 오는 사람의 순서. 메뉴가 이 순서로 놓여 있다 -->
+      <p class="order">처음이라면 차례대로 <strong>글자</strong> → <strong>훈련</strong> → <strong>내 진행</strong></p>
 
       <div class="menu">
         <button class="menuRow" id="homeStudyBtn" type="button">
@@ -936,7 +1114,7 @@
             <svg viewBox="0 0 40 40" fill="currentColor"><rect x="4" y="12" width="5" height="16" rx="2.5"/><rect x="10.5" y="4" width="5" height="22" rx="2.5"/><rect x="17.5" y="2" width="5" height="24" rx="2.5"/><rect x="24.5" y="4" width="5" height="22" rx="2.5"/><rect x="31" y="9" width="5" height="18" rx="2.5"/><rect x="8" y="22" width="26" height="15" rx="6"/></svg>
           </span>
           <span><strong>글자</strong>
-            <span class="desc">처음이라면 여기부터. 글자를 하나씩 눌러 손 모양을 먼저 봅니다</span></span>
+            <span class="desc">글자를 눌러 그 손 모양을 봅니다. 채점도 기록도 없습니다 — 처음이거나 모양을 다시 보고 싶을 때</span></span>
           <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>
         </button>
         <button class="menuRow" id="homeTrainBtn" type="button">
@@ -944,7 +1122,7 @@
             <svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linejoin="round"><circle cx="20" cy="20" r="15"/><path d="M16 13l11 7-11 7z"/></svg>
           </span>
           <span><strong>훈련</strong>
-            <span class="desc">손이 만든 글자를 읽고 답합니다. 기록이 남습니다</span></span>
+            <span class="desc">손이 만든 글자를 읽고 답합니다. 답이 기록되어 다음 난이도가 됩니다 — 글자 모양을 한 번 본 뒤에</span></span>
           <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>
         </button>
         <button class="menuRow" id="homeProgressBtn" type="button">
@@ -952,7 +1130,7 @@
             <svg viewBox="0 0 40 40" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 34h30"/><path d="M8 27l8-8 6 5 11-12"/></svg>
           </span>
           <span><strong>내 진행</strong>
-            <span class="desc">지금 난이도와 세션별 정확도를 봅니다</span></span>
+            <span class="desc">이름을 넣으면 지금 난이도와 세션별 정확도를 봅니다 — 훈련을 마친 뒤에</span></span>
           <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>
         </button>
       </div>
@@ -1016,7 +1194,7 @@
         <section class="block">
           <h2>글자가 아닌 자세</h2>
           <p class="note">
-            중립은 또박또박 문항에서 글자와 글자 사이에 지나갑니다. 글자로 읽지 않습니다.
+            중립은 훈련에서 글자와 글자 사이에 지나가는 자세입니다. 글자로 읽지 않습니다.
             쉬는 자세는 손이 쉴 때의 자세입니다.
           </p>
           <!-- 초록 = 글자가 아닌 자세. 중립과 쉬는 자세는 서로 다른 자세다 (R3) -->
@@ -1048,6 +1226,10 @@
 
     <!-- 시작 -->
     <section id="startPanel" class="card">
+      <!-- 무엇이 시작되는가. 문항 수는 계획이 정하므로 적지 않는다 (§59) -->
+      <p class="note">
+        손이 글자를 보여 주고, 멈추면 읽은 글자를 답합니다. 답은 기록되어 다음 훈련의 난이도가 됩니다.
+      </p>
       <!-- 답 입력 방법. 세션을 시작할 때 하나를 고르고, 세션 중에는 바꾸지
            않는다 — 바꾸면 응답 시간이 두 방법의 혼합이 된다 (DECISIONS §56) -->
       <fieldset class="modes" id="inputModes">
@@ -1055,6 +1237,12 @@
         <label><input type="radio" name="inputMode" value="typing" checked> 타자</label>
         <label><input type="radio" name="inputMode" value="buttons"> 버튼</label>
         <label><input type="radio" name="inputMode" value="drag"> 끌어 놓기</label>
+        <!-- 셋이 무엇이 다른가. 고를 근거가 없으면 기본값에 머문다 -->
+        <ul class="modeHelp">
+          <li><strong>타자</strong> — 자판으로 글자를 칩니다</li>
+          <li><strong>버튼</strong> — 화면의 글자 단추를 차례로 누릅니다</li>
+          <li><strong>끌어 놓기</strong> — 글자 조각을 끌어다 답 칸에 놓습니다</li>
+        </ul>
         <p class="note" id="inputModeNote">세션 중에는 바꿀 수 없습니다.</p>
       </fieldset>
 
@@ -1075,6 +1263,7 @@
       </div>
       <label for="name">이름</label>
       <input type="text" id="name" class="plain" autocomplete="off">
+      <p class="note">기록은 이 이름으로 남습니다. 내 진행에서 같은 이름으로 봅니다.</p>
       <div class="row">
         <button class="primary" id="startBtn">세션 시작</button>
       </div>
@@ -1136,6 +1325,12 @@
         두 트랙은 훈련하는 기술이 다르므로 따로 봅니다. 합친 수치는 내지 않습니다.
         한 번 틀려 다시 본 문항은 두 번 답한 것으로 셉니다.
       </p>
+      <!-- 표의 이름이 무엇을 세는가. 수치·계산은 그대로다 (§59) -->
+      <ul class="terms">
+        <li><strong>판별</strong>은 서로 상관없는 글자를 이어 본 문항, <strong>단어</strong>는 영어 단어를 본 문항입니다</li>
+        <li><strong>순서 오류율</strong>은 글자는 다 맞게 읽었는데 순서만 바뀐 답의 비율입니다</li>
+        <li><strong>평균 응답</strong>은 손이 멈춘 뒤 답을 낼 때까지 걸린 시간입니다</li>
+      </ul>
       <div id="summaryTables"></div>
       <div class="row"><button class="primary" id="againBtn">처음으로</button></div>
     </section>
@@ -1176,6 +1371,11 @@
         <section class="card block">
           <h2>지금 난이도</h2>
           <p class="note">다음 세션은 여기서 시작합니다.</p>
+          <ul class="terms">
+            <li><strong>유지 시간</strong>은 손이 한 글자를 보여 주는 시간입니다</li>
+            <li><strong>경계</strong>가 또박또박이면 글자 사이에 중립 자세가 지나가고, 연결이면 곧바로 이어집니다</li>
+            <li><strong>(처음)</strong>은 그 트랙의 기록이 아직 없어 처음 난이도에서 시작한다는 뜻입니다</li>
+          </ul>
           <table id="progressDifficulty"></table>
         </section>
 
@@ -1189,6 +1389,7 @@
           <h2>세션별 정확도</h2>
           <p class="note">
             두 트랙은 훈련하는 기술이 다르므로 따로 봅니다. 합친 수치는 내지 않습니다.
+            판별은 서로 상관없는 글자를 이어 본 문항, 단어는 영어 단어를 본 문항입니다.
           </p>
           <div id="progressTrend"></div>
         </section>
@@ -1201,9 +1402,32 @@
   <!-- ================================================================ -->
   <div id="teacherMode" hidden>
     <div class="theader">
-      <h1>진단</h1>
-      <div class="station" id="station"><span>스테이션 확인 중…</span></div>
-      <div class="conn"><span class="dot" id="logDot"></span><span id="conn">로그 소켓 연결 전</span></div>
+      <div class="titleRow">
+        <h1>진단</h1>
+        <!-- MCP 로그를 받는 실시간 연결. 끊기면 스스로 다시 붙는다 -->
+        <div class="conn"><span class="dot" id="logDot"></span><span id="conn">실시간 로그 연결 전</span></div>
+      </div>
+      <p class="lede">
+        학습자 한 명의 훈련 계획을 만들어 승인하고, 로봇손과 에이전트가 한 일을 봅니다.
+        학습자 화면으로 돌아가려면 탭 줄 오른쪽 끝의 [학습자 모드로] 를 누릅니다.
+      </p>
+
+      <!-- 로봇손 상태 — 교사가 쓸 문장이 위, 원래 값은 접힌 상세 (§59).
+           `/api/device/status` 의 mode · calibration_hash · calibration_hash_state ·
+           lock_holder 는 지우지 않는다 — 전기팀과 CAL_HASH 를 맞출 때 쓴다 (§35) -->
+      <section class="card" aria-labelledby="stationTitle">
+        <h2 id="stationTitle">로봇손 상태</h2>
+        <p class="note">
+          교사 모드에 들어올 때 읽은 상태입니다. 손이 움직이지 않으면 여기부터 봅니다.
+          실물 손이 없을 때는 탭 줄의 [모의 손 화면] 으로 화면에 그린 손을 새 창에 띄웁니다.
+        </p>
+        <div class="alarm" id="stationAlarm" role="alert" hidden></div>
+        <ul class="station" id="station"><li>상태 확인 중…</li></ul>
+        <details class="internal">
+          <summary>기술 정보 — 전기팀·개발자용</summary>
+          <dl class="raw" id="stationRaw"></dl>
+        </details>
+      </section>
     </div>
 
     <!-- 계획 · 로그 — 한 화면에 둔다. "멈췄다 → 사람이 승인했다 → 그래서
@@ -1211,41 +1435,53 @@
     <div class="tgrid" id="teacherPlanView">
       <section>
         <div class="card">
-          <h2>계획 생성 · 승인</h2>
+          <h2>계획 만들기 · 승인</h2>
+          <!-- 계획은 생성만 된다. 승인해야 세션이 만들어진다 (PRD 13.3) -->
           <p class="note">
-            계획은 생성만 된다. <strong>승인해야 세션이 만들어진다</strong> (PRD 13.3).
+            학습자와 요청을 적으면 에이전트가 이번 세션의 문항 목록을 만듭니다.
+            만들기만 하고 실행하지 않습니다 — <strong>[승인] 을 눌러야 세션이 열리고 로봇손을 잡습니다.</strong>
           </p>
           <div class="fields">
             <div>
               <label for="planLearner">학습자 이름</label>
               <input type="text" id="planLearner" autocomplete="off" list="learners">
               <datalist id="learners"></datalist>
+              <p class="hint">학습자 화면에서 쓴 이름과 같아야 그 기록으로 계획합니다. 기록이 있는 이름은 입력하면 목록에 나옵니다.</p>
             </div>
             <div>
-              <label for="request">요청 (자연어)</label>
+              <label for="request">요청</label>
               <textarea id="request" placeholder="예: V와 W가 계속 헷갈린다고 한다. 그 둘을 집중적으로 보고 단어로 마무리해 줘."></textarea>
+              <p class="hint">무엇을 연습시키고 싶은지 평소 말로 적습니다. 에이전트는 글자·단어·유지 시간까지만 정하고, 손가락 각도는 다루지 않습니다.</p>
             </div>
             <div class="pair">
               <div>
                 <label for="discCount">판별 문항 수</label>
                 <input type="number" id="discCount" value="8" min="0" max="40">
+                <p class="hint">서로 상관없는 글자를 이어 보여 주는 문항</p>
               </div>
               <div>
                 <label for="wordCount">단어 문항 수</label>
                 <input type="number" id="wordCount" value="4" min="0" max="40">
+                <p class="hint">영어 단어를 보여 주는 문항. 두 트랙의 기록은 따로 셉니다</p>
               </div>
             </div>
           </div>
           <div class="row">
             <button class="primary" id="planBtn">계획 생성</button>
             <span class="note" id="planNote"></span>
+            <p class="note full">
+              모델을 부르므로 20초 안팎 걸립니다. 모델을 쓸 수 없거나 검증에 두 번 실패하면
+              규칙으로 만듭니다(규칙 폴백). 어느 쪽이든 승인 전에는 실행되지 않습니다.
+            </p>
           </div>
           <div class="error" id="planError"></div>
 
           <div id="planView" hidden>
             <div class="verdict pending" id="planVerdict"></div>
 
-            <p class="note" id="planMeta" style="margin-top:1rem"></p>
+            <h3 class="sub">만든 계획</h3>
+            <p class="note" id="planMeta"></p>
+            <p class="hint">계획 번호 · 만든 방법(모델 또는 규칙 폴백) · 모델에 물은 횟수 · 예상 시간</p>
             <p id="planRationale"></p>
 
             <table>
@@ -1253,16 +1489,32 @@
               <thead><tr><th>#</th><th>트랙</th><th>글자</th><th>유지</th><th>경계</th></tr></thead>
               <tbody id="planItems"></tbody>
             </table>
+            <p class="hint">
+              유지는 손이 한 글자를 보여 주는 시간입니다. 경계가 또박또박이면 글자 사이에 중립 자세가
+              지나가고, 연결이면 곧바로 이어집니다.
+            </p>
 
-            <div id="planFindings" style="margin-top:1rem"></div>
+            <h3 class="sub">검증 결과</h3>
+            <p class="hint">
+              스테이션이 계획을 규칙으로 다시 확인한 결과입니다. 줄마다 아래 작은 글씨는 검사 이름과
+              원문입니다 — 옮겨 적을 때 씁니다.
+            </p>
+            <div id="planFindings"></div>
 
             <div class="row" id="planActions">
               <button class="primary" id="approveBtn">승인 — 세션 시작</button>
               <button class="danger" id="rejectBtn">거부</button>
+              <p class="note full">
+                <strong>[승인]</strong> 은 로봇손을 잡고 세션을 엽니다. 학습자가 화면 앞에 있을 때 누르세요 —
+                학습자가 곧 [시작] 을 누르지 않으면 로봇손 사용 권한(락)이 만료되어 세션이 사라집니다.
+                <strong>[거부]</strong> 는 이 계획을 버립니다. 세션은 만들어지지 않습니다.
+              </p>
             </div>
 
-            <!-- 승인이 막혔을 때만 나온다. 무엇을 하면 되는지가 여기 적힌다. -->
+            <!-- 승인이 막혔을 때만 나온다. 무엇을 하면 되는지가 첫 줄, 코드와 서버
+                 원문이 그 아래 작은 줄이다 — 원문은 그대로 남긴다 (§45, §59) -->
             <p class="error" id="planHint" hidden></p>
+            <p class="rawline" id="planHintCode"></p>
             <div class="recovery" id="planRecovery" hidden>
               <button id="lockResetBtn" type="button">세션 끝내고 손 놓기</button>
               <span class="note" id="lockResetNote"></span>
@@ -1276,12 +1528,21 @@
         <div class="card">
           <div class="logHead">
             <h2>MCP 호출 로그</h2>
-            <span class="note" id="logCount">0건</span>
+            <span class="count" id="logCount">0건</span>
           </div>
+          <!-- 시연 ⑥ 의 핵심 패널이다 (PRD 14.2, 15.2) -->
           <p class="note">
-            Claude Desktop 과 에이전트의 도구 호출이 실시간으로 지나간다. 최신이 위다.
-            <strong>차단된 호출은 사유와 함께 붉게</strong> 표시된다 (시연 ⑥).
+            Claude Desktop 과 에이전트가 스테이션의 도구를 부를 때마다 한 줄씩 쌓입니다. 최신이 위입니다.
+            <strong>차단된 호출은 거부 코드와 사유를 붙여 붉은 줄로</strong> 나옵니다.
+            이 패널은 보기만 합니다 — 여기서 실행되는 것은 없습니다.
+            건수는 교사 모드를 연 뒤 지나간 호출 수입니다.
           </p>
+          <ul class="legend" aria-label="줄 종류">
+            <li>도구 호출</li>
+            <li class="l-result">호출 결과</li>
+            <li class="l-plan">계획 · 승인</li>
+            <li class="l-blocked">차단</li>
+          </ul>
           <ul class="log" id="log"></ul>
           <p class="empty" id="logEmpty">아직 호출이 없습니다.</p>
         </div>
@@ -1292,13 +1553,31 @@
       <div class="card">
         <h2>혼동 행렬</h2>
         <p class="note">
-          트랙을 <strong>따로</strong> 본다. 두 트랙을 합친 화면은 없다 — 단어 트랙의
-          정답은 철자 지식으로 보정되므로 같은 표에 넣으면 지표가 오염된다 (기획서 3.3).
+          학습자들이 어떤 두 글자를 서로 바꿔 읽었는지 모은 표입니다. 모든 학습자의 기록을 합쳐 셉니다.
+        </p>
+        <!-- 읽는 법. **지금 화면은 격자가 아니라 쌍 목록이다** — 서버가 방향 없는 쌍과
+             횟수만 준다 (`/api/stats/confusion`). 격자로 바꾸는 것은 판단 항목이다
+             (docs/ui_audit_2026-09-29.md J1, DECISIONS §59) -->
+        <h3 class="sub">읽는 법</h3>
+        <ul class="terms">
+          <li>한 줄이 헷갈린 <strong>두 글자</strong>입니다. “V · W” 는 V 를 W 로 읽은 경우와 W 를 V 로
+            읽은 경우를 합친 것입니다 — 어느 쪽으로 읽었는지는 나누지 않습니다</li>
+          <li><strong>횟수</strong>가 클수록 학습자에게 잘 갈라지지 않는 쌍입니다. 많은 순으로 놓입니다</li>
+          <li><strong>훈련 대상</strong>이 “목록에 없음” 이면 설정의 혼동쌍 목록 밖의 쌍입니다. 기록은 하지만
+            약점 쌍을 고를 때는 쓰지 않습니다</li>
+          <li>맞게 읽은 횟수는 이 표에 없습니다. 틀린 경우만 셉니다</li>
+        </ul>
+        <!-- 트랙은 따로 본다. 합친 화면은 없다 — 단어 트랙의 정답은 철자 지식으로
+             보정되므로 같은 표에 넣으면 지표가 오염된다 (기획서 3.3) -->
+        <p class="note">
+          <strong>판별과 단어는 따로 봅니다.</strong> 단어는 철자를 알면 짐작으로 맞힐 수 있어서,
+          합치면 손을 읽는 능력이 흐려집니다.
         </p>
         <div class="row">
           <button class="toggle" id="trackDiscrimination" aria-pressed="true">판별</button>
           <button class="toggle" id="trackWord" aria-pressed="false">단어</button>
           <button id="statsRefresh">새로고침</button>
+          <p class="note full">[판별] · [단어] 로 볼 트랙을 고릅니다. 표는 저절로 바뀌지 않습니다 — 훈련이 끝난 뒤에는 [새로고침] 을 누릅니다.</p>
         </div>
         <div id="statsView"></div>
         <div class="error" id="statsError"></div>
@@ -2527,7 +2806,7 @@ function openLogSocket() {
 
   socket.onopen = () => {
     el("logDot").classList.add("live");
-    el("conn").textContent = "로그 소켓 연결됨";
+    el("conn").textContent = "실시간 로그 연결됨";
     // 스테이션 정보는 기동 시점에 정해지는 사실이다 (모드는 기동 인자, 해시는
     // 연결 시점 핸드셰이크). 그래서 주기적으로 묻지 않고 **소켓이 붙을 때만**
     // 읽는다 — 재접속은 서버가 다시 떴을 수 있다는 유일한 신호다. 폴링이 아니다.
@@ -2536,7 +2815,7 @@ function openLogSocket() {
   socket.onmessage = (event) => appendLog(JSON.parse(event.data));
   socket.onclose = () => {
     el("logDot").classList.remove("live");
-    el("conn").textContent = "로그 소켓 끊김 — 다시 연결합니다";
+    el("conn").textContent = "실시간 로그 끊김 — 다시 연결합니다";
     setTimeout(openLogSocket, RECONNECT_MS);
   };
   // 이 소켓으로는 아무것도 보내지 않는다. 명령 경로는 REST 하나다 (§27).
@@ -2546,38 +2825,78 @@ function openLogSocket() {
     좁은 시간 칸을 넘친다. */
 // 해시 대조 상태. `calibration_hash_ok` 는 true/false/null 이고 사유는 `_state` 에
 // 있다 — "해당 없음" 과 "불일치" 를 한 분기로 읽지 않기 위한 것이다 (DECISIONS §48.3).
+// 교사가 읽을 문장이다. 원래 값(`not_applicable` 등)은 아래 접힌 상세에 그대로 나온다 (§59).
 const HASH_LABEL = {
-  ok: "펌웨어 일치",
-  mismatch: "펌웨어 불일치",
-  not_applicable: "대조 없음 (펌웨어 없음)",
-  unknown: "대조 미확인",
+  ok: "펌웨어 설정 일치",
+  mismatch: "펌웨어 설정 불일치",
+  not_applicable: "펌웨어 대조 없음 — 모의 장치에는 펌웨어가 없습니다",
+  unknown: "펌웨어 확인 전 — 로봇손 연결을 아직 확인하지 못했습니다",
 };
 
-/** 모드 · 해시 · 일치 여부. 손이 왜 안 움직이는지 찾을 때 먼저 보는 줄이다. */
+const MODE_LABEL = {
+  serial: "연결: 실제 로봇손",
+  mock: "연결: 모의 장치 (하드웨어 없음)",
+};
+
+// 교사가 행동할 수 있는 문장. 불일치일 때만 크게 띄운다 (§59).
+const HASH_MISMATCH_TEXT =
+  "로봇손 펌웨어가 지금 설정과 다릅니다. 전기팀에 펌웨어 재업로드를 요청하세요.";
+
+/**
+ * 모드 · 해시 · 일치 여부 · 락. 손이 왜 안 움직이는지 찾을 때 먼저 보는 카드다.
+ *
+ * 위 줄은 교사가 쓸 문장, 원래 값은 접힌 상세다. **값을 지우지 않는다** — 해시는
+ * `calibration.h` 의 `CAL_HASH` 와 눈으로 맞춰 보는 값이다 (§35, §59).
+ */
 async function loadStation() {
   const node = el("station");
+  const raw = el("stationRaw");
+  const alarm = el("stationAlarm");
   let status;
   try {
     status = await teacherCall("GET", "/api/device/status");
   } catch (error) {
     clear(node);
-    add(node, "span", "bad", "스테이션 상태를 읽지 못했습니다");
+    add(node, "li", "bad", "로봇손 상태를 읽지 못했습니다. 서버가 켜져 있는지 확인하세요.");
+    clear(raw);
+    add(raw, "dt", null, "오류");
+    add(raw, "dd", null, error.message);
+    alarm.hidden = true;
     return;
   }
 
   const serial = status.mode === "serial";
+  const state = status.calibration_hash_state;
   clear(node);
-  add(node, "span", serial ? "serial" : null,
-      serial ? "실기 (serial)" : "Mock");
-  add(node, "span", null, `해시 ${status.calibration_hash || "?"}`);
-  // 불일치만 붉게. 나머지는 사실 보고이므로 시선을 끌지 않는다.
-  add(node, "span", status.calibration_hash_ok === false ? "bad" : null,
-      HASH_LABEL[status.calibration_hash_state] || status.calibration_hash_state);
+  add(node, "li", serial ? "serial" : null, MODE_LABEL[status.mode] || `연결: ${status.mode}`);
+  // 불일치·미확인만 붉게. 나머지는 사실 보고이므로 시선을 끌지 않는다.
+  add(node, "li", status.calibration_hash_ok === false || state === "unknown" ? "bad" : null,
+      HASH_LABEL[state] || state);
   // 락을 누가 쥐었는가. 학습자 모드가 "다른 사람이 쓰고 있다" 로 막힐 때
   // 먼저 볼 줄이다.
-  add(node, "span", null,
+  add(node, "li", null,
       status.lock_holder === null || status.lock_holder === undefined
-        ? "락 없음" : `락: 세션 ${status.lock_holder}`);
+        ? "지금 로봇손을 쓰는 사람 없음" : `세션 ${status.lock_holder} 이 로봇손을 쓰는 중`);
+
+  // 불일치 — 교사가 할 일을 크게. `calibration_hash_ok === false` 만 본다
+  // (`null` 은 "해당 없음" 이지 불일치가 아니다, §48.3).
+  clear(alarm);
+  alarm.hidden = status.calibration_hash_ok !== false;
+  if (!alarm.hidden) {
+    alarm.appendChild(document.createTextNode(HASH_MISMATCH_TEXT));
+    add(alarm, "span", "sub", `이 서버가 기대하는 해시: ${status.calibration_hash || "?"}`);
+  }
+
+  // 원래 값 그대로. 옮겨 적을 때 쓴다.
+  clear(raw);
+  const rawRow = (label, value) => {
+    add(raw, "dt", null, label);
+    add(raw, "dd", null, value === null || value === undefined ? "null" : String(value));
+  };
+  rawRow("장치 모드 (mode)", status.mode);
+  rawRow("캘리브레이션 해시", status.calibration_hash);
+  rawRow("해시 대조 (calibration_hash_state)", state);
+  rawRow("락 보유 세션 (lock_holder)", status.lock_holder);
 }
 
 function sourceLabel(source) {
@@ -2905,8 +3224,9 @@ const PLAN_HINT = {
     "이 계획은 이미 승인·거부되었거나 검증 뒤 남은 문항이 없습니다. " +
     "계획을 새로 만드세요.",
   PLAN_NOT_FOUND:
-    "계획이 남아 있지 않습니다. 승인 대기 계획은 DB 에 두지 않으므로 " +
-    "서버가 재시작되면 사라집니다 (DECISIONS §47.5). 계획을 새로 만드세요.",
+    // 승인 대기 계획을 DB 에 두지 않는 이유는 DECISIONS §47.5
+    "계획이 남아 있지 않습니다. 승인 대기 계획은 저장하지 않으므로 " +
+    "서버가 재시작되면 사라집니다. 계획을 새로 만드세요.",
 };
 
 /** 손 놓기를 내놓을 코드. 락이 물린 경우에만이다 — 다른 원인에 내놓으면
@@ -2926,14 +3246,22 @@ function clearPlanFailure() {
   el("planError").textContent = "";
   el("planHint").textContent = "";
   el("planHint").hidden = true;
+  el("planHintCode").textContent = "";
   el("planRecovery").hidden = true;
   el("lockResetNote").textContent = "";
   disarmLockReset();
 }
 
+/**
+ * 안내가 있는 거부는 **안내가 첫 줄, 코드와 원문이 그 아래 작은 줄**이다 — §57 의
+ * 검증 결과와 같은 두 줄 모양 (§59). 원문은 바꾸지 않고 자리만 옮긴다. 안내가 없는
+ * 코드는 예전처럼 원문이 그대로 오류 줄이 된다 — 삼키지 않는다.
+ */
 function showPlanFailure(error) {
-  el("planError").textContent = error.message;
-  const hint = PLAN_HINT[error.code];
+  // 안내 자리는 계획 아래에 있다. 계획이 없는 동안(생성 실패)에는 원문을 위 오류 줄에 둔다.
+  const hint = el("planView").hidden ? undefined : PLAN_HINT[error.code];
+  el("planError").textContent = hint ? "" : error.message;
+  el("planHintCode").textContent = hint ? error.message : "";
   el("planHint").textContent = hint || "";
   el("planHint").hidden = !hint;
   el("planRecovery").hidden = !LOCK_CODES.has(error.code);
@@ -2971,6 +3299,7 @@ async function resetLock() {
     el("planError").textContent = "";
     el("planHint").textContent = "";
     el("planHint").hidden = true;
+    el("planHintCode").textContent = "";
   } catch (error) {
     disarmLockReset();
     el("lockResetNote").textContent = "";

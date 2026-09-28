@@ -124,16 +124,73 @@ def test_the_guide_does_not_open_the_teacher_door(client):
 # 세 상태
 # --------------------------------------------------------------------------- #
 
+def _motion(decl):
+    """선언에 실제로 움직임을 거는 `animation` · `transition` 이 있는가. `none` 은 끄는 것이다."""
+    return [value.strip() for value in
+            re.findall(r"(?<![\w-])(?:animation|transition)(?:-[a-z]+)?\s*:\s*([^;]+)", decl)
+            if not value.strip().startswith("none")]
+
+
+def _selectors(sel):
+    """쉼표로 묶인 선택자를 나눈다. `:is(...)` 안의 쉼표는 나누지 않는다."""
+    parts, depth, current = [], 0, ""
+    for ch in sel:
+        depth += ch == "("
+        depth -= ch == ")"
+        if ch == "," and depth == 0:
+            parts.append(current.strip())
+            current = ""
+        else:
+            current += ch
+    return parts + [current.strip()]
+
+
 def test_the_three_states_are_marked_without_motion(client):
-    """움직이는 중 / 답할 차례 / 결과 가 `data-phase` 로 갈리고, 전환 효과가 없다."""
+    """움직이는 중 / 답할 차례 / 결과 가 `data-phase` 로 갈리고, **그 상태들에는** 전환
+    효과가 없다.
+
+    §57 에서는 파일 전체에 transition · animation · @keyframes 가 없음을 봤다. §59 에서
+    범위를 좁혔다 — 근거인 PRD 14.1 "시선은 로봇손에" 는 손이 움직이는 동안의 말이다.
+    그래서 이제는 (1) 움직임을 거는 규칙은 전부 홈 화면 안에 있고 (2) 손이 움직이는
+    패널이 있는 동안과 훈련·글자 화면에서는 움직임을 끄는 규칙이 있으며 (3) 줄인 동작
+    설정에서 전부 꺼지고 (4) 짧고 반복하지 않음을 본다."""
     body = _page(client)
     phases = _strings(_block(body, "PHASE_LABEL"))
     assert len(phases) >= 3
     for phase in ("moving", "answer", "result"):
         assert f'[data-phase="{phase}"]' in body, phase
+
     style = _style(body)
-    for motion in ("transition", "animation", "@keyframes"):
-        assert motion not in style, motion
+    rules = _rules(style)
+    moving = [(sel, decl) for sel, decl in rules if _motion(decl)]
+    assert moving, "움직임이 하나도 없다 — 홈 등장 효과가 빠졌다"
+    for sel, decl in moving:
+        # (1) 홈에만. 상태(`data-phase`)·훈련·글자 화면을 가리키는 선택자에는 없다.
+        for part in _selectors(sel):
+            assert part.startswith("#homeView"), sel
+        assert "data-phase" not in sel and "trainView" not in sel and "studyView" not in sel, sel
+        # (4) 0.3초 이하, 무한 반복 없음.
+        for value in _motion(decl):
+            assert "infinite" not in value, value
+            for number in re.findall(r"(\d*\.?\d+)s\b", value):
+                assert float(number) <= 0.3, value
+    for sel, decl in rules:
+        if "animation-delay" in decl:
+            assert all(p.startswith("#homeView") for p in _selectors(sel)), sel
+
+    # (2) 손이 움직이는 동안은 어느 화면에서든, 훈련·글자 화면은 늘 끈다.
+    guards = [sel for sel, decl in rules
+              if "animation: none" in decl and "transition: none" in decl]
+    guard = next((sel for sel in guards if '[data-phase="moving"]' in sel), None)
+    assert guard, "손이 움직이는 동안 움직임을 끄는 규칙이 없다"
+    assert ':has([data-phase="moving"]:not([hidden]))' in guard, "보이는 화면만 막으면 홈 탭이 샌다"
+    for view in ("#trainView", "#studyView"):
+        assert f"{view} *" in guard, view
+
+    # (3) 줄인 동작 설정.
+    reduced = style[style.index("@media (prefers-reduced-motion: reduce)"):]
+    reduced = reduced[:reduced.index("}\n")]
+    assert "animation: none" in reduced and "transition: none" in reduced
 
 
 # --------------------------------------------------------------------------- #
@@ -355,3 +412,89 @@ def test_the_approved_design_adjustments_stay(client):
     # 손이 쉬는 동안 글자 화면의 상태는 한 줄.
     assert any('#studyPanel:not([data-phase="moving"])' in sel and "display: none" in decl
                for sel, decl in rules)
+
+
+# --------------------------------------------------------------------------- #
+# 홈과 교사 화면의 설명 (§59)
+# --------------------------------------------------------------------------- #
+
+def _home(body):
+    return body[body.index('<main id="homeView">'):body.index('<main id="studyView"')]
+
+
+def test_the_home_says_what_this_is_and_where_to_start(client):
+    """무엇인가(읽는 연습), 메뉴마다 무엇·언제, 처음 오는 사람의 순서."""
+    home = _visible_text(_home(_page(client)))
+    assert "로봇손" in home and "읽어 답합니다" in home and "읽는 법" in home
+    assert re.search(r"글자\s*→\s*훈련\s*→\s*내 진행", home)
+    for when in ("처음이거나", "본 뒤에", "마친 뒤에"):
+        assert when in home, when
+
+
+def _teacher_markup(body):
+    return body[body.index('<div id="teacherMode" hidden>'):body.index("<script>")]
+
+
+def test_the_station_card_speaks_to_the_teacher(client):
+    """장치 상태는 교사가 읽을 문장이 위, 원래 값은 접힌 상세다. 값을 지우지 않는다 (§35, §59)."""
+    body = _page(client)
+    station = _function(body, "loadStation")
+    # 예전 문구가 그대로 찍히지 않는다.
+    for raw in ('"Mock"', '"락 없음"', '"실기 (serial)"', "`해시 ${"):
+        assert raw not in station, raw
+    # 원래 값은 접힌 상세에 전부 남는다.
+    for field in ("status.mode", "status.calibration_hash", "state", "status.lock_holder"):
+        assert f"rawRow(" in station and field in station, field
+    markup = _teacher_markup(body)
+    details = markup[markup.index('<details class="internal">'):markup.index("</details>")]
+    assert 'id="stationRaw"' in details
+    # 불일치일 때만 크게, 교사가 할 일을 말한다. `null` 은 불일치가 아니다 (§48.3).
+    assert ("로봇손 펌웨어가 지금 설정과 다릅니다. 전기팀에 펌웨어 재업로드를 요청하세요."
+            in body)
+    assert "alarm.hidden = status.calibration_hash_ok !== false;" in station
+
+
+def test_the_confusion_view_explains_what_it_actually_draws(client):
+    """읽는 법이 있다. 지금 화면은 방향 없는 쌍 목록이므로 격자(대각선·가로·세로)를 말하지
+    않는다 — 없는 것을 설명하면 틀린 설명이다 (§59). 트랙은 여전히 따로다."""
+    markup = _teacher_markup(_page(client))
+    view = markup[markup.index('id="teacherConfusionView"'):]
+    text = _visible_text(view)
+    assert "읽는 법" in text and "어느 쪽으로 읽었는지는 나누지 않습니다" in text
+    for grid_word in ("대각선", "세로", "가로"):
+        assert grid_word not in text, grid_word
+    assert "따로 봅니다" in text
+
+
+def test_teacher_screen_shows_no_document_references(client):
+    """PRD · DECISIONS · 시연 번호는 주석의 일이다. 교사 화면 글자에 없다 (§59)."""
+    body = _page(client)
+    text = _visible_text(_teacher_markup(body))
+    assert not re.search(r"PRD|DECISIONS|§|시연|기획서", text), text
+    script = body[body.index("// 교사 모드 — teacher.html"):body.index("// 모드와 화면")]
+    script = re.sub(r"/\*.*?\*/", "", script, flags=re.S)
+    for literal in _strings(script):
+        assert not re.search(r"PRD|DECISIONS|§|기획서", literal), literal
+
+
+def test_a_refused_approval_still_shows_the_code(client):
+    """안내가 첫 줄이 되어도 코드와 원문은 화면에 남는다 — 자리만 옮긴다 (§45, §59)."""
+    failure = _function(_page(client), "showPlanFailure")
+    assert 'el("planError").textContent = hint ? "" : error.message;' in failure
+    assert 'el("planHintCode").textContent = hint ? error.message : "";' in failure
+
+
+def test_teacher_spacing_uses_the_seven_steps(client):
+    """교사 쪽 여백도 --sp-* 일곱 단계만 쓴다 (§58.3 → §59)."""
+    body = _page(client)
+    style = re.sub(r"/\*.*?\*/", "", body[body.index("/* ==== 교사 모드"):body.index("</style>")],
+                   flags=re.S)
+    decls = re.findall(
+        r"(?<![\w-])(?:margin|padding)(?:-(?:top|bottom|left|right))?\s*:\s*([^;{}]+);"
+        r"|(?<![\w-])(?:row-|column-)?gap\s*:\s*([^;{}]+);", style)
+    assert decls
+    for a, b in decls:
+        literals = re.findall(r"\d*\.?\d+(?:rem|px|em)", a or b)
+        assert not literals, (a or b)
+    assert "box-shadow" not in style and "gradient" not in style
+    assert "border-bottom: 6px solid var(--letter-edge)" in style
