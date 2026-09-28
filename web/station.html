@@ -74,6 +74,16 @@
     --text-3: #6C7585;
     --night: #1B2331;
 
+    /* 여백은 일곱 단계뿐이다 — 4px 배수 (§58.3). 시안의 제각각 값(9·13·19…)을
+       가장 가까운 단계로 옮겼다. 크기(높이·폭)와 테두리는 여백이 아니다. */
+    --sp-1: 4px;
+    --sp-2: 8px;
+    --sp-3: 12px;
+    --sp-4: 16px;
+    --sp-6: 24px;
+    --sp-8: 32px;
+    --sp-12: 48px;
+
     --display: "Black Han Sans", "Gothic A1", system-ui, sans-serif;
     --sans: "Gothic A1", system-ui, -apple-system, "Segoe UI", sans-serif;
     --latin: "Outfit", "Gothic A1", system-ui, sans-serif;
@@ -102,7 +112,7 @@
     display: grid;
     grid-template-columns: 1fr auto 1fr;
     align-items: center;
-    padding: 0 16px;
+    padding: 0 var(--sp-4);
     background: var(--blue);
     border-bottom: 4px solid var(--blue-edge);
     color: #fff;
@@ -118,7 +128,7 @@
     grid-column: 1;
     grid-row: 1;
     justify-self: start;
-    padding: 0.3rem 0.85rem;
+    padding: var(--sp-1) var(--sp-3);
     border-radius: 999px;
     background: var(--yellow);
     color: var(--yellow-ink-deep);
@@ -138,16 +148,16 @@
     display: flex;
     flex-wrap: wrap;
     align-items: stretch;
-    gap: 0 4px;
-    padding: 0 16px;
+    gap: 0 var(--sp-1);
+    padding: 0 var(--sp-4);
     background: var(--navy);
     font-family: var(--sans);
   }
-  .navGroup { display: flex; flex-wrap: wrap; align-items: stretch; gap: 0 4px; }
-  .navLabel { align-self: center; color: var(--sky-home); font-size: 0.8rem; padding: 0 0.5rem; }
+  .navGroup { display: flex; flex-wrap: wrap; align-items: stretch; gap: 0 var(--sp-1); }
+  .navLabel { align-self: center; color: var(--sky-home); font-size: 0.8rem; padding: 0 var(--sp-2); }
   .navItem {
     min-height: 54px;
-    padding: 0 1.1rem;
+    padding: 0 var(--sp-4);
     border: 0;
     border-bottom: 4px solid transparent;
     background: none;
@@ -160,8 +170,8 @@
   .navTool {
     align-self: center;
     min-height: 44px;
-    margin-left: 0.5rem;
-    padding: 0 1rem;
+    margin-left: var(--sp-2);
+    padding: 0 var(--sp-4);
     border: 2px solid var(--text-3);
     border-radius: 10px;
     background: none;
@@ -177,11 +187,11 @@
     display: flex;
     flex-direction: row-reverse;
     align-items: center;
-    gap: 0.75rem;
+    gap: var(--sp-3);
   }
   .modeSwitch button {
     min-height: 44px;
-    padding: 0 0.25rem;
+    padding: 0 var(--sp-1);
     border: 0;
     background: none;
     color: #fff;
@@ -205,7 +215,7 @@
   /* 바탕은 끝까지 채우고 내용은 가운데 한 줄로. */
   #learnerMode > main {
     flex: 1;
-    padding: 2rem max(16px, calc((100% - 60rem) / 2)) 3rem;
+    padding: var(--sp-8) max(var(--sp-4), calc((100% - 60rem) / 2)) var(--sp-12);
   }
   #homeView { background: var(--sky-home); }
   #studyView { background: var(--sky-study); }
@@ -214,12 +224,14 @@
   #learnerMode .viewHead {
     display: flex;
     align-items: center;
-    gap: 0.75rem;
+    gap: var(--sp-3);
     flex-wrap: wrap;
-    margin-bottom: 1.5rem;
+    margin-bottom: var(--sp-6);
   }
   #learnerMode .viewHead h2 { margin: 0; font: 400 2rem/1.2 var(--display); color: var(--text); }
   #learnerMode .counter { color: var(--text-2); font-weight: 700; font-variant-numeric: tabular-nums; }
+  /* 비어 있으면 자리도 차지하지 않는다 — 요약에서 진행 막대가 카드 끝보다 짧아졌다. */
+  #learnerMode .counter:empty { display: none; }
 
   /* 카드의 첫·끝 요소 여백과 비어 있는 안내·오류 줄이 안쪽 여백을 위아래로
      다르게 만들었다 (§58.2). */
@@ -231,16 +243,15 @@
     border: 2px solid var(--letter-line);
     border-bottom: 6px solid var(--letter-edge);
     border-radius: 18px;
-    padding: 1.5rem;
+    padding: var(--sp-6);
   }
-  #learnerMode .card.narrow { max-width: 34rem; }
   #learnerMode .card .note, #learnerMode .card label, #learnerMode .card legend { color: var(--text-3); }
 
-  #learnerMode label { display: block; margin-bottom: 0.5rem; color: var(--text-2); font-weight: 700; }
+  #learnerMode label { display: block; margin-bottom: var(--sp-2); color: var(--text-2); font-weight: 700; }
   #learnerMode input[type="text"] {
     width: 100%;
     min-height: 56px;
-    padding: 0.6rem 1rem;
+    padding: var(--sp-3) var(--sp-4);
     border: 2px solid var(--letter-line);
     border-bottom: 5px solid var(--letter-edge);
     border-radius: 12px;
@@ -259,11 +270,11 @@
   #learnerMode input[type="text"]:focus { outline: 3px solid var(--blue); outline-offset: 2px; }
   #learnerMode input[type="text"]:disabled { background: var(--sky-train); color: var(--text-3); }
 
-  #learnerMode .row { display: flex; gap: 0.6rem; margin-top: 1rem; flex-wrap: wrap; align-items: center; }
+  #learnerMode .row { display: flex; gap: var(--sp-3); margin-top: var(--sp-4); flex-wrap: wrap; align-items: center; }
   /* 버튼: 흰 바탕 + 아래 테두리. 누를 수 있는 것은 전부 44px 이상이다. */
   #learnerMode button {
     min-height: 48px;
-    padding: 0 1.4rem;
+    padding: 0 var(--sp-6);
     border: 2px solid var(--letter-line);
     border-bottom: 5px solid var(--letter-edge);
     border-radius: 12px;
@@ -278,8 +289,10 @@
     border-bottom-color: var(--green-edge);
     color: #fff;
   }
+  /* 한 화면에 열셋이다. 주황 바탕이면 글자보다 버튼이 먼저 보인다 — 흰 바탕에
+     주황 테두리로 낮췄다 (§58.3). #46220A / #FFFFFF 는 15.4:1. */
   #learnerMode button.see {
-    background: var(--orange);
+    background: #fff;
     border-color: var(--orange);
     border-bottom-color: var(--orange-edge);
     color: var(--orange-ink);
@@ -292,26 +305,27 @@
   #learnerMode .error { color: var(--block); font-weight: 700; }
   #learnerMode .error:empty { display: none; }
 
-  #learnerMode table { border-collapse: collapse; width: 100%; margin-top: 0.75rem; }
-  #learnerMode caption { text-align: left; font-weight: 800; padding-bottom: 0.4rem; color: var(--text); }
+  #learnerMode table { border-collapse: collapse; width: 100%; margin-top: var(--sp-3); }
+  #learnerMode caption { text-align: left; font-weight: 800; padding-bottom: var(--sp-2); color: var(--text); }
   #learnerMode th, #learnerMode td {
     text-align: left;
-    padding: 0.5rem 0.6rem 0.5rem 0;
+    padding: var(--sp-2) var(--sp-3) var(--sp-2) 0;
     border-bottom: 2px solid var(--sky-study);
   }
   #learnerMode th { color: var(--text-3); font-weight: 500; }
   #learnerMode td { font-weight: 700; font-variant-numeric: tabular-nums; }
-  #learnerMode #summaryTables th { width: 60%; }
+  /* 카드가 전폭이 된 뒤로 60% 이면 값이 이름에서 너무 멀다. 내 진행의 표와 같은 35% (§58.3). */
+  #learnerMode #summaryTables th { width: 35%; }
   /* 내 진행의 표는 카드마다 쌓인다. 열 폭을 내용에 맡기면 값 열이 카드마다 다른
      자리에서 시작한다 — 첫 열 폭을 같이 둔다 (§58.2). */
   #learnerMode :is(#progressTotals, #progressDifficulty, #depthTable) { table-layout: fixed; }
   #learnerMode :is(#progressTotals, #progressDifficulty, #depthTable) tr > :first-child { width: 35%; }
-  #learnerMode #summaryTables table + table { margin-top: 1.5rem; }
+  #learnerMode #summaryTables table + table { margin-top: var(--sp-6); }
 
   /* 복구 수단. 학습 흐름의 일부가 아니므로 맨 아래 작은 밑줄 글자다.
      멈추기(노란 버튼)와 모양이 달라야 한다 — 결과가 다른 두 기능이 같아
      보이면 안 된다 (DECISIONS.md §45). */
-  #learnerMode .recovery { margin-top: 3rem; padding-top: 1rem; border-top: 2px solid var(--letter-line); }
+  #learnerMode .recovery { margin-top: var(--sp-12); padding-top: var(--sp-4); border-top: 2px solid var(--letter-line); }
   #learnerMode .recovery button {
     min-height: 44px;
     padding: 0;
@@ -322,11 +336,11 @@
     text-decoration: underline;
   }
   #learnerMode .recovery button.armed { color: var(--block); text-decoration: none; }
-  #learnerMode .recovery .note { display: inline; margin-left: 0.6rem; }
+  #learnerMode .recovery .note { display: inline; margin-left: var(--sp-3); }
 
   /* ---- 홈 --------------------------------------------------------------
-     하늘 · 구름 · 잔디. 구름은 둥근 사각형이다 — 그림이 아니라 모양이다. */
-  #learnerMode > #homeView { position: relative; overflow: hidden; padding-bottom: calc(62px + 3rem); }
+     하늘과 잔디. 구름(둥근 사각형 셋)은 흰 알약·떠 있는 버튼으로 읽혀 뺐다 (§58.3). */
+  #learnerMode > #homeView { position: relative; overflow: hidden; padding-bottom: calc(62px + var(--sp-12)); }
   #homeView::after {
     content: "";
     position: absolute;
@@ -335,13 +349,8 @@
     background: var(--grass);
     border-top: 6px solid var(--grass-top);
   }
-  #homeView .cloud { position: absolute; background: #fff; border-radius: 999px; }
-  #homeView .cloud.c1 { width: 180px; height: 56px; top: 36px; left: 6%; }
-  #homeView .cloud.c2 { width: 120px; height: 40px; top: 110px; right: 9%; }
-  #homeView .cloud.c3 { width: 90px; height: 32px; top: 250px; left: 14%; }
-  #homeView > :not(.cloud) { position: relative; z-index: 1; }
   #homeView .hero {
-    margin: 1rem 0 0.75rem;
+    margin: var(--sp-4) 0 var(--sp-3);
     text-align: center;
     font: 400 clamp(2.6rem, 7vw, 4.2rem)/1.15 var(--display);
     color: #fff;
@@ -352,7 +361,7 @@
   }
   #homeView .lead {
     max-width: 46rem;
-    margin: 0 auto 2rem;
+    margin: 0 auto var(--sp-8);
     text-align: center;
     font-size: 1.1rem;
     color: var(--text);
@@ -360,15 +369,15 @@
   #homeView .lead strong { font-weight: 900; }
   #homeView .note { text-align: center; }
 
-  #homeView .menu { display: grid; gap: 0.75rem; max-width: 40rem; margin: 0 auto; }
+  #homeView .menu { display: grid; gap: var(--sp-3); max-width: 40rem; margin: 0 auto; }
   #learnerMode .menuRow {
     display: grid;
     grid-template-columns: 64px minmax(0, 1fr) 24px;
     align-items: center;
-    gap: 1rem;
+    gap: var(--sp-4);
     width: 100%;
     min-height: 88px;
-    padding: 0.75rem 1rem 0.75rem 0.75rem;
+    padding: var(--sp-3) var(--sp-4) var(--sp-3) var(--sp-3);
     text-align: left;
     border-radius: 18px;
     border-bottom-width: 6px;
@@ -386,10 +395,10 @@
   #learnerMode .menuRow .desc { display: block; font-weight: 500; font-size: 0.95rem; color: var(--text-3); }
   #learnerMode .menuRow .chev { width: 24px; height: 24px; color: var(--text-3); }
 
-  #homeView .guide { max-width: 40rem; margin: 2rem auto 0; }
-  #homeView .guide h2 { margin: 0 0 0.5rem; font: 900 1.15rem var(--sans); }
-  #homeView .guide ol { margin: 0.5rem 0 1rem; padding-left: 1.3rem; }
-  #homeView .guide li { margin-bottom: 0.6rem; }
+  #homeView .guide { max-width: 40rem; margin: var(--sp-8) auto 0; }
+  #homeView .guide h2 { margin: 0 0 var(--sp-2); font: 900 1.15rem var(--sans); }
+  #homeView .guide ol { margin: var(--sp-2) 0 var(--sp-4); padding-left: var(--sp-6); }
+  #homeView .guide li { margin-bottom: var(--sp-3); }
   #homeView .guide .note { text-align: left; color: var(--text-3); }
 
   /* 글자 타일 줄. 누르는 것이 아니다 — 무엇을 배우는지 보여 주는 줄이다. */
@@ -398,13 +407,13 @@
     display: flex;
     flex-wrap: wrap;
     justify-content: center;
-    gap: 0.5rem;
-    margin: 2.5rem auto 0;
+    gap: var(--sp-2);
+    margin: var(--sp-12) auto 0;
     padding: 0;
   }
   #learnerMode .tileRow li {
     min-width: 48px;
-    padding: 0.35rem 0.6rem;
+    padding: var(--sp-1) var(--sp-3);
     text-align: center;
     background: #fff;
     border: 2px solid var(--letter-line);
@@ -420,14 +429,14 @@
     display: flex;
     flex-direction: column;
     align-items: flex-start;
-    gap: 0.35rem;
-    margin-bottom: 1.5rem;
+    gap: var(--sp-1);
+    margin-bottom: var(--sp-6);
   }
   #learnerMode .badge {
     display: inline-flex;
     align-items: center;
-    gap: 0.45rem;
-    padding: 0.3rem 0.85rem;
+    gap: var(--sp-2);
+    padding: var(--sp-1) var(--sp-3);
     border-radius: 999px;
     background: var(--navy);
     color: #fff;
@@ -439,11 +448,14 @@
   #learnerMode .status .phase { font: 400 2.4rem/1.2 var(--display); color: var(--text); }
   #learnerMode .status .line { color: var(--text-2); }
   #learnerMode .status .glyph { display: none; }
+  /* 글자 화면에서 손이 쉬는 동안은 설명 한 줄만. 배지와 "누를 차례" 가 카드를 첫
+     화면 밖으로 밀어냈다. 움직이는 동안은 아래 어두운 화면 규칙이 크게 보인다 (§58.3). */
+  #learnerMode #studyPanel:not([data-phase="moving"]) .status :is(.badge, .phase) { display: none; }
   /* 멈추기는 손이 움직이는 동안에만 나타난다 (§45). */
   #learnerMode button.stop {
     min-height: 56px;
-    margin-top: 1.25rem;
-    padding: 0 2.4rem;
+    margin-top: var(--sp-6);
+    padding: 0 var(--sp-12);
     background: var(--yellow);
     border-color: var(--yellow);
     border-bottom: 6px solid var(--yellow-ink);
@@ -481,7 +493,7 @@
   #learnerMode [data-phase="moving"] .glyph {
     display: block;
     min-height: 1em;
-    margin: 0.5rem 0;
+    margin: var(--sp-2) 0;
     font: 600 158px/1 var(--latin);
     color: #fff;
   }
@@ -497,11 +509,15 @@
      않게 한다. 내 답은 결과 안에 다시 적힌다. */
   #learnerMode [data-phase="result"] .answerArea { display: none; }
   #learnerMode [data-phase="result"] .result { border-top: 6px solid var(--text); }
+  /* 결과에서는 판정 문구("글자를 잘못 읽었습니다")가 제목이다. 상태 줄의 큰 글자
+     "결과" 는 숨기고 배지와 한 줄만 둔다 — 같은 무게의 제목이 둘이면 무엇이 제목인지
+     흐리다 (§58.3). */
+  #learnerMode [data-phase="result"] .status .phase { display: none; }
 
   /* ---- 훈련 머리 — 학습자 · 진행 막대 · 몇 번째 -------------------------- */
-  #learnerMode .trainHead { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.5rem; }
+  #learnerMode .trainHead { display: flex; align-items: center; gap: var(--sp-4); flex-wrap: wrap; margin-bottom: var(--sp-6); }
   #learnerMode .who {
-    padding: 0.35rem 0.9rem;
+    padding: var(--sp-1) var(--sp-4);
     border-radius: 999px;
     background: var(--blue);
     color: #fff;
@@ -519,12 +535,12 @@
 
   /* ---- 답 칸 · 글자 패드 --------------------------------------------------
      목록은 서버가 준다 (`/api/letters`). 문항에 맞춰 줄이지 않는다 (§56). */
-  #learnerMode .pad { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 1rem; }
+  #learnerMode .pad { display: flex; flex-wrap: wrap; gap: var(--sp-2); margin-top: var(--sp-4); }
   #learnerMode .pad button,
   #learnerMode .tile {
     min-width: 60px;
     min-height: 64px;
-    padding: 0 0.6rem;
+    padding: 0 var(--sp-3);
     font: 600 2rem/1 var(--latin);
     text-align: center;
   }
@@ -545,14 +561,20 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 0.5rem;
-    padding: 0.75rem;
+    gap: var(--sp-2);
+    padding: var(--sp-3);
     border: 2px solid var(--letter-line);
     border-bottom: 6px solid var(--letter-edge);
     border-radius: 18px;
     background: #fff;
   }
-  #learnerMode .composed .tile { min-width: 72px; min-height: 72px; font-size: 2.4rem; }
+  /* 놓인 글자(답)는 파랑 바탕 흰 글자 — 누를 글자(패드)와 모양이 갈린다. 파랑은
+     이미 "글자" 의 색이다 (§58.3). #FFFFFF / #2477C2 는 4.67:1. */
+  #learnerMode .composed .tile {
+    min-width: 72px; min-height: 72px; font-size: 2.4rem;
+    background: var(--blue); color: #fff;
+    border-color: var(--blue); border-bottom-color: var(--blue-edge);
+  }
   /* 다음 글자가 들어갈 빈 칸. 칸 수는 그리지 않는다 — 몇 글자인지는 판별
      트랙의 머리 줄만 말한다 (PRD 14.1). */
   #learnerMode .composed::after {
@@ -564,15 +586,15 @@
   }
   #learnerMode .composed.over { outline: 3px dashed var(--blue); outline-offset: 2px; }
 
-  #learnerMode fieldset.modes { border: 0; padding: 0; margin: 0 0 1.5rem; }
-  #learnerMode fieldset.modes legend { padding: 0; margin-bottom: 0.5rem; font-weight: 700; }
+  #learnerMode fieldset.modes { border: 0; padding: 0; margin: 0 0 var(--sp-6); }
+  #learnerMode fieldset.modes legend { padding: 0; margin-bottom: var(--sp-2); font-weight: 700; }
   #learnerMode fieldset.modes label {
     display: inline-flex;
     align-items: center;
-    gap: 0.5rem;
+    gap: var(--sp-2);
     min-height: 48px;
-    margin: 0 0.5rem 0.5rem 0;
-    padding: 0 1.1rem;
+    margin: 0 var(--sp-2) var(--sp-2) 0;
+    padding: 0 var(--sp-4);
     border: 2px solid var(--letter-line);
     border-bottom: 5px solid var(--letter-edge);
     border-radius: 12px;
@@ -584,9 +606,9 @@
   #learnerMode fieldset.modes label:has(input:checked) { border-color: var(--blue); background: var(--sky-study); }
   #learnerMode fieldset.modes input { width: 1.2rem; height: 1.2rem; margin: 0; accent-color: var(--blue); }
 
-  #learnerMode .result { margin-top: 1rem; padding-top: 1.25rem; }
-  #learnerMode .verdict { margin: 0 0 0.5rem; font: 400 2rem/1.25 var(--display); color: var(--text); }
-  #learnerMode .reveal { margin: 0.4rem 0; font-size: 1.1rem; }
+  #learnerMode .result { margin-top: var(--sp-4); padding-top: var(--sp-6); }
+  #learnerMode .verdict { margin: 0 0 var(--sp-2); font: 400 2rem/1.25 var(--display); color: var(--text); }
+  #learnerMode .reveal { margin: var(--sp-2) 0; font-size: 1.1rem; }
   #learnerMode .reveal .label { display: inline-block; min-width: 3.5rem; color: var(--text-2); font-weight: 700; }
   #learnerMode .reveal .letters { font: 600 2rem var(--latin); letter-spacing: 0.3em; color: var(--text); }
   #learnerMode .reveal.mine .letters { font-size: 1.5rem; color: var(--text-2); }
@@ -596,15 +618,15 @@
   #learnerMode .cards {
     display: grid;
     grid-template-columns: repeat(6, minmax(0, 1fr));
-    gap: 0.75rem;
+    gap: var(--sp-3);
   }
   @media (max-width: 52rem) { #learnerMode .cards { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
   #learnerMode .lcard {
     display: flex;
     flex-direction: column;
     align-items: stretch;
-    gap: 0.6rem;
-    padding: 0.9rem 0.75rem 0.75rem;
+    gap: var(--sp-3);
+    padding: var(--sp-4) var(--sp-3) var(--sp-3);
     text-align: center;
     background: #fff;
     border: 2px solid var(--letter-line);
@@ -618,7 +640,7 @@
   #learnerMode .lcard.pose hr { border-top-color: var(--pose-line); }
   #learnerMode .lcard .tag {
     align-self: center;
-    padding: 0.15rem 0.65rem;
+    padding: var(--sp-1) var(--sp-3);
     border-radius: 999px;
     background: var(--green);
     color: #fff;
@@ -637,10 +659,10 @@
   }
   /* 글자 카드와 같은 6열 격자에 두 칸씩 — 세로 선이 위아래로 맞는다 (§58.2). */
   #learnerMode .poses .lcard { grid-column: span 2; }
-  #learnerMode .block { margin-top: 2.5rem; }
-  #learnerMode .block h2 { margin: 0 0 0.25rem; font: 900 1.15rem var(--sans); color: var(--text); }
-  #learnerMode .block p { margin: 0.25rem 0; }
-  #learnerMode .card.block { margin-top: 1.25rem; }
+  #learnerMode .block { margin-top: var(--sp-12); }
+  #learnerMode .block h2 { margin: 0 0 var(--sp-1); font: 900 1.15rem var(--sans); color: var(--text); }
+  #learnerMode .block p { margin: var(--sp-1) 0; }
+  #learnerMode .card.block { margin-top: var(--sp-6); }
 
   /* ==== 교사 모드 ========================================================
      학습자 모드와 목적이 다르다. 저쪽은 시선을 로봇손에 두기 위해 화면을
@@ -892,10 +914,6 @@
     <!-- 홈 — 처음 여는 화면. 무엇을 하는 도구인지, 어떻게 진행되는지를 여기서
          다 알 수 있게 한다. 길게 쓰지 않는다 — 읽고 바로 시작한다 (DECISIONS §57) -->
     <main id="homeView">
-      <div class="cloud c1" aria-hidden="true"></div>
-      <div class="cloud c2" aria-hidden="true"></div>
-      <div class="cloud c3" aria-hidden="true"></div>
-
       <h2 class="hero">지문자 읽기 훈련</h2>
       <p class="lead">
         로봇손이 영어 지문자를 만들면, 그것을 보고 어떤 글자인지 읽어 입력합니다.<br>
@@ -962,7 +980,7 @@
         <span class="counter" id="studyWho"></span>
       </header>
 
-      <section id="studyStart" class="card narrow">
+      <section id="studyStart" class="card">
         <p class="note">
           글자를 하나씩 눌러 로봇손으로 봅니다. 채점하지 않고, 기록도 남지 않습니다.
         </p>
@@ -1020,7 +1038,7 @@
     </header>
 
     <!-- 시작 -->
-    <section id="startPanel" class="card narrow">
+    <section id="startPanel" class="card">
       <!-- 답 입력 방법. 세션을 시작할 때 하나를 고르고, 세션 중에는 바꾸지
            않는다 — 바꾸면 응답 시간이 두 방법의 혼합이 된다 (DECISIONS §56) -->
       <fieldset class="modes" id="inputModes">
@@ -1103,7 +1121,7 @@
     </section>
 
     <!-- 요약 -->
-    <section id="summaryPanel" class="card narrow" hidden>
+    <section id="summaryPanel" class="card" hidden>
       <div class="viewHead"><h2>세션 요약</h2></div>
       <p class="note">
         두 트랙은 훈련하는 기술이 다르므로 따로 봅니다. 합친 수치는 내지 않습니다.
@@ -1130,7 +1148,7 @@
         <span class="counter" id="progressWho"></span>
       </header>
 
-      <div class="card narrow">
+      <div class="card">
         <label for="progressName">이름</label>
         <input type="text" id="progressName" class="plain" autocomplete="off">
         <div class="row">

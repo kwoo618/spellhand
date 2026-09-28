@@ -303,3 +303,47 @@ def test_the_letter_screen_cards_share_one_grid(client):
     rules = _rules(_style(_page(client)))
     assert any(".poses .lcard" in sel and "grid-column: span 2" in decl for sel, decl in rules)
     assert any(".lcard.end" in sel and "margin: 0" in decl for sel, decl in rules)
+
+
+# --------------------------------------------------------------------------- #
+# 판단 항목 반영 (§58.3)
+# --------------------------------------------------------------------------- #
+
+def _learner_style(body):
+    style = body[body.index("<style>"):body.index("/* ==== 교사 모드")]
+    return re.sub(r"/\*.*?\*/", "", style, flags=re.S)
+
+
+def test_learner_spacing_uses_the_seven_steps(client):
+    """학습자 쪽 여백(margin·padding·gap)은 --sp-* 일곱 단계만 쓴다. 예외는 본문 폭
+    (60rem)과 잔디 높이(62px) 둘이다 — 여백이 아니라 크기다."""
+    style = _learner_style(_page(client))
+    steps = dict(re.findall(r"--sp-(\d+): (\d+)px;", style))
+    assert sorted(int(v) for v in steps.values()) == [4, 8, 12, 16, 24, 32, 48]
+    decls = re.findall(
+        r"(?<![\w-])(?:margin|padding)(?:-(?:top|bottom|left|right))?\s*:\s*([^;{}]+);"
+        r"|(?<![\w-])(?:row-|column-)?gap\s*:\s*([^;{}]+);", style)
+    assert decls
+    for a, b in decls:
+        value = (a or b).replace("calc((100% - 60rem) / 2)", "").replace("62px", "")
+        literals = re.findall(r"\d*\.?\d+(?:rem|px|em)", value)
+        assert not literals, (a or b)
+
+
+def test_the_approved_design_adjustments_stay(client):
+    body = _page(client)
+    rules = _rules(_learner_style(body))
+    # 구름이 없다.
+    assert 'class="cloud' not in body
+    # [보기] 는 흰 바탕.
+    see = [decl for sel, decl in rules if sel.strip().endswith("button.see")]
+    assert see and "background: #fff" in see[0]
+    # 결과에서는 판정이 제목 — 상태 줄의 큰 글자를 숨긴다.
+    assert any('[data-phase="result"] .status .phase' in sel and "display: none" in decl
+               for sel, decl in rules)
+    # 놓인 글자는 파랑.
+    assert any(".composed .tile" in sel and "background: var(--blue)" in decl
+               for sel, decl in rules)
+    # 손이 쉬는 동안 글자 화면의 상태는 한 줄.
+    assert any('#studyPanel:not([data-phase="moving"])' in sel and "display: none" in decl
+               for sel, decl in rules)
