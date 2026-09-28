@@ -225,3 +225,56 @@ def test_the_letter_count_comes_from_the_server(client, config):
     assert f"{len(config.poses)}자" not in body
     assert "${letters.length}자" in _function(body, "renderLetterSet")
     assert "${letters.length}자입니다" in _function(body, "renderStudyPads")
+
+
+# --------------------------------------------------------------------------- #
+# 상태 줄은 단계를 따른다 (§58.1)
+# --------------------------------------------------------------------------- #
+
+def _learner_script(body):
+    return body[body.index("<script>"):body.index("// 교사 모드 — teacher.html")]
+
+
+def test_every_phase_change_rewrites_the_status_line(client):
+    """단계를 바꾸는 곳은 상태 줄도 바꾼다. 그러지 않으면 앞 단계 문구가 남는다 —
+    결과 화면에 제출 때의 "틀렸다면 …" 이 남아 있었다."""
+    script = _learner_script(_page(client))
+    names = re.findall(r"^(?:async )?function (\w+)\(", script, re.M)
+    changing = [
+        name for name in names
+        if name not in ("setPhase", "setMoving")
+        and re.search(r'setPhase\("|setMoving\(true\)', _function(script, name))
+    ]
+    assert {"setAnswering", "backToResult", "submit", "showStopped", "showStalled",
+            "present", "presentPlanned", "replayDemo"} <= set(changing), changing
+    for name in changing:
+        assert 'el("status").textContent' in _function(script, name), name
+
+
+def test_the_result_phase_has_its_own_status_line(client):
+    """결과는 다음에 누를 것을 말한다. 제출 때 문구를 들고 있지 않는다."""
+    body = _page(client)
+    result = re.sub(r"//[^\n]*", "", _function(body, "renderResult"))
+    assert "backToResult();" in result
+    assert "[다음 문항]" in result and "[요약 보기]" in result
+    assert "틀렸다면" not in result
+    back = _function(body, "backToResult")
+    assert 'setPhase("result");' in back
+    assert 'el("status").textContent = state.resultLine;' in back
+
+
+def test_a_replayed_demo_returns_to_the_result(client):
+    """[시범 다시 보기] 는 손을 움직이므로 화면이 어두워진다. 끝나면(시범 이벤트),
+    멈추면, 거부되면 결과로 돌아온다 — 결과가 어두운 화면 뒤에 숨은 채 남지 않는다."""
+    body = _page(client)
+    handle = _function(body, "handleEvent")
+    demo = handle[handle.index('case "demo":'):handle.index('case "error":')]
+    assert "if (state.resultLine !== null) { backToResult(); break; }" in demo
+    stopped = handle[handle.index('if (event.code === "STOPPED")'):]
+    assert stopped.index("backToResult()") < stopped.index("showStopped()")
+    replay = _function(body, "replayDemo")
+    catch = replay[replay.index("catch"):]
+    assert catch.index("backToResult();") < catch.index("setError(")
+    # 결과가 없는 동안에는 되돌아갈 곳이 없다 — 새 문항·새 제출에서 비운다.
+    assert "state.resultLine = null;" in _function(body, "nextItem")
+    assert "state.resultLine = null;" in _function(body, "submit")
