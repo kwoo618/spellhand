@@ -634,10 +634,11 @@ web/mockhand.html        모의 손 시각화 (새 창)
 firmware/hand_controller/ 아두이노 펌웨어 (calibration.h 는 생성물)
 tools/gen_calibration.py poses.json → calibration.h, --check
 tools/pilot.py           제3자 판별 파일럿 (임시 도구, 세션·DB 를 거치지 않음)
+tools/migrate_db.py      옛 DB 의 sessions.learner_id 를 NULL 허용으로 (--check / --apply)
 scripts/verify.ps1       완료 판정
 tests/                   pytest
-docs/                    기획서 v3, 개발 PRD v2.1(기준), 하드웨어 측정 요청서
-DECISIONS.md             설계 결정 기록 §1~§62 — 무엇을 왜 그렇게 정했는가. 문서와 코드가 어긋나 보이면 여기를 먼저 본다
+docs/                    현재_상태.md(인수인계), 기획서 v3, 개발 PRD v2.1(기준)·v2(구본), 하드웨어 측정 요청서, UI 점검 기록
+DECISIONS.md             설계 결정 기록 §1~§64 (맨 위에 색인) — 무엇을 왜 그렇게 정했는가. 문서와 코드가 어긋나 보이면 여기를 먼저 본다
 CLAUDE.md                작업 규칙과 현재 상태
 ```
 

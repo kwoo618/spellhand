@@ -22,3 +22,9 @@ firmware/hand_controller/calibration.h
 
 # 제3자 판별 파일럿 정답지. 참가자가 보면 파일럿이 무효가 된다.
 tools/pilot_key_*.txt
+
+# 백업·이전 DB. 학습자 기록이 들어 있을 수 있다 — 커밋하지 않는다.
+# station_old_*.db: 스키마 변경 때 옮겨 둔 이전 파일 (2026-09-29)
+# *.before-migrate-*: tools/migrate_db.py --apply 가 남기는 복사본
+station_old_*.db
+*.db.before-migrate-*
