@@ -204,6 +204,22 @@ def test_confusion_stats_require_a_track(client):
     assert client.get("/api/stats/confusion").status_code == 422
 
 
+@pytest.mark.parametrize("bad", ["all", "both", "", "Discrimination", "words"])
+def test_an_unknown_track_is_refused_with_400_and_json(client, bad):
+    """허용되지 않은 트랙은 500 이 아니라 400 과 JSON 이다. 본문이 무엇이 허용되는지
+    말한다. `all` 은 거부하는 값이지 지원하는 값이 아니다 (§61). 빠진 경우(422)는
+    `test_confusion_stats_require_a_track` 가 본다."""
+    response = client.get("/api/stats/confusion", params={"track": bad})
+    assert response.status_code == 400, response.text
+    assert response.headers["content-type"].startswith("application/json")
+    body = response.json()
+    assert body["code"] == "UNKNOWN_TRACK"
+    assert body["allowed"] == [TRACK_DISCRIMINATION, TRACK_WORD]
+    assert TRACK_DISCRIMINATION in body["detail"] and TRACK_WORD in body["detail"]
+    # 거부한 것이지 합친 행렬을 준 것이 아니다.
+    assert "cells" not in body and "letters" not in body
+
+
 def test_the_confusion_endpoint_is_a_directed_matrix_with_the_diagonal(client, station):
     """`expected × given` 칸이 온다. 맞게 읽은 위치가 대각선 칸으로 들어 있고,
     틀린 칸은 방향을 가진다 — 보여 준 글자가 `expected` 다 (§60)."""

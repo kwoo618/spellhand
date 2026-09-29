@@ -59,6 +59,7 @@ from server.routes.api import router as api_router
 from server.routes.events import MCP_LOG_CHANNEL, EventHub
 from server.safety import SafetyError, SafetyGate, SessionLock
 from server.session import SessionController, SessionError
+from server.stats import UnknownTrackError
 from server.study import StudyController
 
 __all__ = ["Station", "create_app", "app"]
@@ -353,6 +354,16 @@ def create_app(station: Optional[Station] = None, **kwargs: object) -> FastAPI:
     @app.exception_handler(AgentError)
     def _on_agent_error(request: Request, exc: AgentError) -> JSONResponse:
         return _rejection(exc)
+
+    # 허용되지 않은 트랙 값. 예전에는 맨 `ValueError` 가 라우트 밖으로 나가
+    # **500 + 비 JSON** 이 됐다 — §50.3 의 `JSON.parse` 사고와 같은 경로다.
+    # 무엇이 허용되는지(`allowed`)를 몸통에 싣는다 (DECISIONS.md §61).
+    @app.exception_handler(UnknownTrackError)
+    def _on_unknown_track(request: Request, exc: UnknownTrackError) -> JSONResponse:
+        return JSONResponse(
+            status_code=exc.http_status,
+            content={**rejection_body(exc), "allowed": list(exc.allowed)},
+        )
 
     # 동기 구동 경로(`/planned` · `/sequence` · `/demo-letter`)는 백그라운드를
     # 거치지 않으므로 `run_in_background` 의 갈래 처리가 걸리지 않는다. 정지가

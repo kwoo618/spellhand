@@ -4041,3 +4041,47 @@ listed}` 만 준다 — 방향(무엇을 무엇으로 읽었나)이 합쳐져 �
   찍을 수 없었다. 여는 쪽에서 같은 출처 JS 로 교사 혼동 행렬 · 계획, 글자 시작, 훈련 시작, 내 진행의
   가로 넘침을 쟀다 — 전부 없음(격자 폭 650px). 또 이 창이 메인 창을 덮어 메인 탭이 `hidden` 이 되어
   스크린샷이 한동안 시간 초과였다
+
+## 61. 허용되지 않은 트랙 값 — 500 대신 400 과 JSON
+
+**배경.** §60 에서 알게 된 것: `/api/stats/confusion?track=all` 처럼 허용되지 않은 트랙 값은
+`stats._require_track` 의 맨 `ValueError` 가 라우트 밖으로 나가 **500 + 비 JSON** 이 됐다. 빈 값
+(`track=`)도 같았다. 화면이 그 본문을 `JSON.parse` 하다 깨진다 — §50.3 에서 학습자에게
+`Unexpected token 'I'` 가 보였던 것과 같은 경로다.
+
+**고친 것.**
+
+- `stats.UnknownTrackError` — `ValueError` 를 잇는다(집계를 직접 부르는 쪽의 뜻은 그대로,
+  `pytest.raises(ValueError)` 테스트도 그대로). `code = "UNKNOWN_TRACK"`, `http_status = 400`,
+  `allowed = TRACKS`. 문구는 예전 `ValueError` 와 같다
+- 앱의 예외 처리기가 400 과 `{code, detail, allowed: ["discrimination", "word"]}` 를 돌려준다.
+  몸통은 다른 거부와 같은 `rejection_body()` 에 `allowed` 를 더한 것이다
+- **`all` 은 거부하는 값이다.** 두 트랙을 합친 집계를 만드는 경로는 새로 생기지 않았다
+- 트랙 파라미터가 **빠진** 경우는 그대로 FastAPI 의 422 다 (`test_confusion_stats_require_a_track`)
+
+**다른 엔드포인트 — 확인만 했다.**
+
+| 엔드포인트 | 트랙 입력 | 틀린 값일 때 | 조치 |
+|---|---|---|---|
+| `GET /api/stats/confusion` | 쿼리 | 500 → **400 JSON** | 고침 |
+| `GET /api/stats/learners/{id}` · `/learners/{name}/stats` · `/learners/{name}/progress` | 받지 않는다 (`TRACKS` 를 서버가 돈다) | 해당 없음 | 없음 |
+| `GET /api/item-bank` | 쿼리 | 이미 JSON — `SESSION_STATE` 409 | 그대로 |
+| `POST /api/sessions/{id}/planned` | 몸통 | 안전 게이트의 구조화된 거부 | 그대로 |
+
+`/item-bank` 는 500 문제가 없어 건드리지 않았다. 다만 같은 잘못(모르는 트랙)에 409 와 400 이
+갈린다. 통계 엔드포인트가 아니고 MCP `get_item_bank` 가 그 코드를 받으므로 맞출지는 **TBD** 다.
+
+**테스트.** `test_an_unknown_track_is_refused_with_400_and_json` (`all` · `both` · 빈 값 ·
+대소문자 · 오타 다섯 경우 — 400, JSON, `code`, 본문의 허용 값, 행렬 필드 없음),
+`test_an_unknown_track_is_a_structured_value_error`.
+
+### 파일럿 파일
+
+- `tools/pilot.py`(제3자 판별 파일럿 실행 스크립트)와 `.gitignore` 의 `tools/pilot_key_*.txt` 줄을
+  커밋했다. 앞선 커밋에서는 "이번 작업이 아니다" 라며 뺐는데, 둘 다 레포에 있어야 하는 파일이다
+- 정답지 `tools/pilot_key_*.txt` 는 무시 규칙에 걸려 커밋되지 않는다. 과거 커밋 이력도 없다
+  (`git log --all -- "tools/pilot_key_*"` 가 비어 있다)
+- 남아 있는 정답지 둘(2026-09-28 22:10:49 시작 · 2/33 에서 중단, 22:11:17 시작 · 33/33 완료)은
+  **지우지 않았다.** 파일에 장치 모드가 적혀 있지 않고(`pilot.py` 는 콘솔에만 찍는다) mock 연습인지
+  실기 기록인지 가릴 근거가 없다. 판단은 사용자에게 남긴다. 다음 실행부터 가릴 수 있게 하려면
+  정답지 머리에 장치 모드를 적으면 된다 — 요청받지 않아 하지 않았다 (TBD)

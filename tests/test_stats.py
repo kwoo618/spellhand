@@ -19,6 +19,7 @@ from server.db import (
     utcnow,
 )
 from server.stats import (
+    UnknownTrackError,
     accuracy_by_hold_ms,
     confusion_counts,
     confusion_matrix,
@@ -722,3 +723,15 @@ def test_session_ordinal_counts_within_the_track_and_survives_the_limit(db):
         (first.session_id, 1), (third.session_id, 2)
     ]
     assert [(p.session_id, p.ordinal) for p in latest] == [(third.session_id, 2)]
+
+
+def test_an_unknown_track_is_a_structured_value_error(db, config):
+    """집계를 직접 부르는 쪽에는 여전히 `ValueError` 이고, 라우트가 쓸 코드와 허용
+    값을 싣는다 (§61). 합치는 값(`all`)을 받아 주는 경로는 없다."""
+    with pytest.raises(UnknownTrackError) as caught:
+        with db.session() as session:
+            confusion_matrix(session, config, "all")
+    assert isinstance(caught.value, ValueError)
+    assert caught.value.code == "UNKNOWN_TRACK"
+    assert caught.value.http_status == 400
+    assert caught.value.allowed == (TRACK_DISCRIMINATION, TRACK_WORD)

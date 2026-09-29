@@ -31,6 +31,7 @@ from server.db import (
 from server.judge import normalize_answer
 
 __all__ = [
+    "UnknownTrackError",
     "TrackSummary",
     "PairCount",
     "MatrixCell",
@@ -55,12 +56,32 @@ __all__ = [
 ]
 
 
-def _require_track(track: str) -> str:
-    if track not in TRACKS:
-        raise ValueError(
+class UnknownTrackError(ValueError):
+    """허용되지 않은 트랙 값. 라우트가 400 과 JSON 으로 돌려준다 (DECISIONS.md §61).
+
+    `ValueError` 를 잇는다 — 집계 함수를 직접 부르는 쪽의 뜻은 그대로다. 예전에는
+    맨 `ValueError` 라 라우트 밖으로 나가 **500 + 비 JSON** 이 됐고, 화면의
+    `JSON.parse` 가 거기서 터졌다 (§50.3 과 같은 경로).
+
+    `all` · `both` 도 여기로 온다. **거부하는 값이지 지원하는 값이 아니다** —
+    두 트랙을 합친 집계는 없다.
+    """
+
+    code = "UNKNOWN_TRACK"
+    http_status = 400
+
+    def __init__(self, track: object) -> None:
+        super().__init__(
             f"track is {track!r}, expected one of {list(TRACKS)}; "
             f"aggregates are never computed across tracks"
         )
+        self.track = track
+        self.allowed = TRACKS
+
+
+def _require_track(track: str) -> str:
+    if track not in TRACKS:
+        raise UnknownTrackError(track)
     return track
 
 
