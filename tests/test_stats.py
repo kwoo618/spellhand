@@ -21,6 +21,7 @@ from server.db import (
 from server.stats import (
     accuracy_by_hold_ms,
     confusion_counts,
+    confusion_matrix,
     default_pairs,
     depth_unlock_progress,
     depth_unlocked,
@@ -587,3 +588,137 @@ def test_every_learner_scoped_aggregate_counts_only_that_learner(db, config):
     assert theirs["confusions"] == [tuple(sorted((a, b)))]
     assert tuple(target.pair) in theirs["weakest"]
     assert tuple(target.pair) not in mine["weakest"]
+
+
+# --------------------------------------------------------------------------- #
+# 혼동 행렬 — 방향과 대각선 (DECISIONS §60)
+# --------------------------------------------------------------------------- #
+
+def _cells(matrix):
+    return {(c.expected, c.given): c.count for c in matrix.cells}
+
+
+def test_confusion_matrix_keeps_direction_and_the_diagonal(db, config):
+    """V 를 W 로 읽은 것과 W 를 V 로 읽은 것이 다른 칸이다. 맞게 읽은 위치가
+    대각선에 들어간다 — 틀린 문항 안의 맞은 글자도 센다."""
+    rec = Recorder(db)
+    rec.add(TRACK_DISCRIMINATION, "VWB", "correct")
+    rec.add(TRACK_DISCRIMINATION, "VWB", "wrong", confusions=[("V", "W")])
+    rec.add(TRACK_DISCRIMINATION, "WBV", "wrong", confusions=[("W", "V")])
+
+    with db.session() as session:
+        matrix = confusion_matrix(session, config, TRACK_DISCRIMINATION)
+
+    assert _cells(matrix) == {
+        ("V", "V"): 2, ("W", "W"): 2, ("B", "B"): 3,
+        ("V", "W"): 1, ("W", "V"): 1,
+    }
+    assert matrix.items == 3
+    by_key = {(c.expected, c.given): c for c in matrix.cells}
+    assert by_key[("V", "V")].diagonal and not by_key[("V", "W")].diagonal
+    # 등재 여부는 쌍 카운터와 같은 뜻이다. 대각선은 쌍이 아니다.
+    assert by_key[("V", "W")].listed and by_key[("W", "V")].listed
+    assert not by_key[("V", "V")].listed
+    # 축은 poses.json 의 글자다. 세로·가로가 같은 순서다.
+    assert matrix.letters == tuple(sorted(config.poses))
+
+
+def test_confusion_matrix_off_diagonal_agrees_with_the_pair_counter(db, config):
+    """대각선 밖을 방향 없이 더하면 쌍 카운터와 같다 — 같은 기록을 센다."""
+    rec = Recorder(db)
+    rec.add(TRACK_DISCRIMINATION, "VWB", "wrong", confusions=[("V", "W")])
+    rec.add(TRACK_DISCRIMINATION, "WBV", "wrong", confusions=[("W", "V")])
+    rec.add(TRACK_DISCRIMINATION, "BLY", "wrong", confusions=[("B", "Y")])
+
+    with db.session() as session:
+        matrix = confusion_matrix(session, config, TRACK_DISCRIMINATION)
+        pairs = confusion_counts(session, config, TRACK_DISCRIMINATION)
+
+    folded = {}
+    for cell in matrix.cells:
+        if not cell.diagonal:
+            key = tuple(sorted((cell.expected, cell.given)))
+            folded[key] = folded.get(key, 0) + cell.count
+    assert folded == {c.pair: c.count for c in pairs}
+
+
+def test_confusion_matrix_never_mixes_tracks(db, config):
+    """단어 트랙의 기록이 판별 행렬의 어떤 칸에도 들어가지 않는다. 반대도 같다."""
+    rec = Recorder(db)
+    rec.add(TRACK_DISCRIMINATION, "VWB", "wrong", confusions=[("V", "W")])
+
+    with db.session() as session:
+        before = confusion_matrix(session, config, TRACK_DISCRIMINATION)
+
+    for _ in range(5):
+        rec.add(TRACK_WORD, "WISE", "wrong", confusions=[("W", "V")])
+    rec.add(TRACK_WORD, "LOVE", "correct")
+
+    with db.session() as session:
+        disc = confusion_matrix(session, config, TRACK_DISCRIMINATION)
+        word = confusion_matrix(session, config, TRACK_WORD)
+
+    assert disc == before
+    assert ("W", "V") not in _cells(disc)
+    assert _cells(word)[("W", "V")] == 5
+    assert ("V", "W") not in _cells(word)
+    assert (disc.items, word.items) == (1, 6)
+
+
+def test_confusion_matrix_requires_a_track(db, config):
+    with pytest.raises(ValueError):
+        with db.session() as session:
+            confusion_matrix(session, config, "both")
+
+
+def test_confusion_matrix_reports_what_it_left_out(db, config):
+    """글자 수·순서 오류는 위치 대응이 없어 칸에 넣지 않는다. 빠진 수는 낸다."""
+    rec = Recorder(db)
+    rec.add(TRACK_DISCRIMINATION, "VWB", "length")
+    rec.add(TRACK_DISCRIMINATION, "VWB", "order")
+    rec.add(TRACK_DISCRIMINATION, "VWB", "order")
+
+    with db.session() as session:
+        matrix = confusion_matrix(session, config, TRACK_DISCRIMINATION)
+
+    assert matrix.cells == ()
+    assert matrix.items == 0
+    assert dict(matrix.skipped) == {"length": 1, "order": 2}
+
+
+def test_confusion_matrix_is_empty_without_records(db, config):
+    with db.session() as session:
+        matrix = confusion_matrix(session, config, TRACK_DISCRIMINATION)
+    assert (matrix.cells, matrix.items) == ((), 0)
+
+
+# --------------------------------------------------------------------------- #
+# 트랙 안 차례 (DECISIONS §60)
+# --------------------------------------------------------------------------- #
+
+def test_session_ordinal_counts_within_the_track_and_survives_the_limit(db):
+    """차례는 그 트랙에서 답한 세션만 센다. 답이 없는 세션(공부 · 참여하지 않은
+    세션)은 번호를 먹지 않는다. 최근 몇 개로 잘라도 차례는 그대로다."""
+    first = Recorder(db)
+    first.add(TRACK_WORD, "WISE", "correct")      # 단어만 한 세션
+    Recorder(db)                                   # 답이 없는 세션
+    second = Recorder(db)
+    second.add(TRACK_DISCRIMINATION, "VWB", "correct")
+    third = Recorder(db)
+    third.add(TRACK_DISCRIMINATION, "VWD", "correct")
+    third.add(TRACK_WORD, "LOVE", "correct")
+
+    with db.session() as session:
+        disc = session_accuracy(session, TRACK_DISCRIMINATION, learner_id=first.learner_id)
+        word = session_accuracy(session, TRACK_WORD, learner_id=first.learner_id)
+        latest = session_accuracy(
+            session, TRACK_DISCRIMINATION, learner_id=first.learner_id, limit=1
+        )
+
+    assert [(p.session_id, p.ordinal) for p in disc] == [
+        (second.session_id, 1), (third.session_id, 2)
+    ]
+    assert [(p.session_id, p.ordinal) for p in word] == [
+        (first.session_id, 1), (third.session_id, 2)
+    ]
+    assert [(p.session_id, p.ordinal) for p in latest] == [(third.session_id, 2)]

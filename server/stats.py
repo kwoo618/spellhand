@@ -28,10 +28,13 @@ from server.db import (
     Item,
     TrainingSession,
 )
+from server.judge import normalize_answer
 
 __all__ = [
     "TrackSummary",
     "PairCount",
+    "MatrixCell",
+    "ConfusionMatrix",
     "HoldBucket",
     "ItemRecord",
     "SessionAccuracy",
@@ -40,6 +43,7 @@ __all__ = [
     "accuracy_by_hold_ms",
     "recent_items",
     "confusion_counts",
+    "confusion_matrix",
     "weakest_pairs",
     "default_pairs",
     "session_accuracy",
@@ -139,6 +143,50 @@ class PairCount:
 
 
 @dataclass(frozen=True)
+class MatrixCell:
+    """혼동 행렬의 한 칸. **방향이 있다** — `expected` 는 로봇손이 보여 준 글자,
+    `given` 은 학습자가 고른 답이다. 둘이 같으면 대각선(맞게 읽음)이다.
+
+    `listed` 는 `PairCount.listed` 와 같은 뜻이다 — 이 두 글자가 `poses.json` 의
+    `confusion_pairs` 에 있는가. 대각선 칸은 쌍이 아니므로 늘 `False` 다.
+    """
+
+    expected: str
+    given: str
+    count: int
+    listed: bool
+
+    @property
+    def diagonal(self) -> bool:
+        return self.expected == self.given
+
+
+@dataclass(frozen=True)
+class ConfusionMatrix:
+    """한 트랙의 `expected × given` 행렬 (DECISIONS.md §60).
+
+    `PairCount` 는 방향을 합치고 정답을 세지 않는다 — 약점 쌍을 고르는 데는
+    그것으로 충분하지만, "V 를 W 로 읽는가, W 를 V 로 읽는가" 와 "V 를 몇 번 맞게
+    읽었나" 를 보여 줄 수 없다. 이것은 그 둘을 담는다.
+
+    **위치 대응이 확실한 답만 칸에 들어간다** — `correct` 와 `wrong`. `length` 는
+    위치가 밀렸고 `order` 는 글자는 다 읽었지만 위치가 뒤섞였다. 둘 다 혼동을
+    기록하지 않는 결과이므로(`judge`) 대각선에도 넣지 않는다. 대신 몇 문항이
+    빠졌는지 `skipped` 로 낸다 — 숨기지 않는다.
+
+    `letters` 는 세로·가로에 같은 순서로 놓는 축이다. `poses.json` 의 글자에,
+    기록에만 있는 글자(타자로 친 답)가 있으면 뒤에 붙인다. `cells` 는 0 이 아닌
+    칸만 담는다.
+    """
+
+    track: str
+    letters: Tuple[str, ...]
+    cells: Tuple[MatrixCell, ...]
+    items: int
+    skipped: Mapping[str, int]
+
+
+@dataclass(frozen=True)
 class SessionAccuracy:
     """세션 하나에서의 한 트랙 성적. 추이를 그리기 위한 것이다.
 
@@ -148,9 +196,15 @@ class SessionAccuracy:
 
     한 세션이 두 트랙을 모두 담지만 이 값은 **한 트랙만** 센다. 세션이 같아도
     판별과 단어는 다른 줄이다.
+
+    `ordinal` 은 **이 트랙에서** 답한 세션 중 몇 번째인가다 (1부터, DECISIONS.md
+    §60). `session_id` 는 공부 세션·참여하지 않은 세션도 번호를 먹어 첫 훈련이
+    "세션 2" 가 된다. `limit` 으로 자르기 **전에** 센다 — 자른 뒤에 세면 21번째
+    세션이 "1번째" 가 된다.
     """
 
     session_id: int
+    ordinal: int
     started_at: Optional[datetime]
     answered: int
     correct: int
@@ -324,6 +378,28 @@ def recent_items(
     )
 
 
+def _confusion_rows(
+    db: DbSession,
+    track: str,
+    *,
+    session_id: Optional[int] = None,
+    learner_id: Optional[int] = None,
+) -> List[Confusion]:
+    """한 트랙의 혼동 기록. `confusion_counts` 와 `confusion_matrix` 가 **같은
+    범위 조건**을 쓰도록 한 곳에 둔다."""
+    _require_track(track)
+    stmt = select(Confusion).where(Confusion.track == track)
+    if session_id is not None or learner_id is not None:
+        stmt = stmt.join(Item, Item.id == Confusion.item_id)
+        if session_id is not None:
+            stmt = stmt.where(Item.session_id == session_id)
+        if learner_id is not None:
+            stmt = stmt.join(
+                TrainingSession, TrainingSession.id == Item.session_id
+            ).where(TrainingSession.learner_id == learner_id)
+    return list(db.scalars(stmt))
+
+
 def confusion_counts(
     db: DbSession,
     config: Config,
@@ -337,20 +413,11 @@ def confusion_counts(
     `confusions.track` 으로 직접 거른다. `items` 와 JOIN 하지 않는 것이 PRD 8장의
     의도다 — 조인 조건을 잘못 쓰면 두 트랙이 섞이기 때문이다.
     """
-    _require_track(track)
-    stmt = select(Confusion).where(Confusion.track == track)
-    if session_id is not None or learner_id is not None:
-        stmt = stmt.join(Item, Item.id == Confusion.item_id)
-        if session_id is not None:
-            stmt = stmt.where(Item.session_id == session_id)
-        if learner_id is not None:
-            stmt = stmt.join(
-                TrainingSession, TrainingSession.id == Item.session_id
-            ).where(TrainingSession.learner_id == learner_id)
-
     listed = {frozenset(p.pair) for p in config.confusion_pairs}
     tally: Dict[FrozenSet[str], int] = {}
-    for confusion in db.scalars(stmt):
+    for confusion in _confusion_rows(
+        db, track, session_id=session_id, learner_id=learner_id
+    ):
         key = frozenset((confusion.expected, confusion.given))
         tally[key] = tally.get(key, 0) + 1
 
@@ -364,6 +431,76 @@ def confusion_counts(
     ]
     counts.sort(key=lambda pc: (-pc.count, pc.pair))
     return tuple(counts)
+
+
+def confusion_matrix(
+    db: DbSession,
+    config: Config,
+    track: str,
+    *,
+    session_id: Optional[int] = None,
+    learner_id: Optional[int] = None,
+) -> ConfusionMatrix:
+    """한 트랙의 `expected × given` 행렬 (DECISIONS.md §60).
+
+    대각선 밖 칸은 `confusions` 기록 그대로다 — `confusion_counts` 가 세는 것과
+    같은 행을 방향을 살려 센다. 대각선은 `items` 에서 센다: `correct` 문항은 모든
+    위치, `wrong` 문항은 혼동이 기록되지 않은 위치다. 두 조회 모두 **자기 테이블의
+    `track`** 으로 거른다. 두 트랙을 합친 행렬은 만들 수 없다.
+    """
+    _require_track(track)
+    by_item: Dict[int, Dict[int, Confusion]] = {}
+    for confusion in _confusion_rows(
+        db, track, session_id=session_id, learner_id=learner_id
+    ):
+        by_item.setdefault(confusion.item_id, {})[confusion.position] = confusion
+
+    tally: Dict[Tuple[str, str], int] = {}
+    skipped = {RESULT_LENGTH: 0, RESULT_ORDER: 0}
+    counted = 0
+    for item in _answered_items(
+        db, track, session_id=session_id, learner_id=learner_id
+    ):
+        if item.result in skipped:
+            skipped[item.result] += 1
+            continue
+        if item.result not in (RESULT_CORRECT, RESULT_WRONG):
+            continue
+        counted += 1
+        confused = by_item.get(item.id, {})
+        for position, letter in enumerate(normalize_answer(item.letters)):
+            confusion = confused.get(position)
+            key = (
+                (confusion.expected, confusion.given)
+                if confusion is not None
+                else (letter, letter)
+            )
+            tally[key] = tally.get(key, 0) + 1
+
+    listed = {frozenset(p.pair) for p in config.confusion_pairs}
+    seen = {letter for key in tally for letter in key}
+    axis = tuple(sorted(config.poses)) + tuple(sorted(seen - set(config.poses)))
+    order = {letter: index for index, letter in enumerate(axis)}
+    cells = sorted(
+        (
+            MatrixCell(
+                expected=expected,
+                given=given,
+                count=count,
+                listed=expected != given
+                and frozenset((expected, given)) in listed,
+            )
+            for (expected, given), count in tally.items()
+        ),
+        key=lambda c: (order[c.expected], order[c.given]),
+    )
+    return ConfusionMatrix(
+        track=track,
+        letters=axis,
+        cells=tuple(cells),
+        items=counted,
+        skipped=skipped,
+    )
 
 
 def weakest_pairs(
@@ -451,6 +588,8 @@ def session_accuracy(
         tally.setdefault(item.session_id, []).append(item)
 
     ordered = sorted(tally)
+    # 차례는 자르기 전에 정한다. 이 트랙에서 답한 세션만 번호를 먹는다.
+    ordinal = {session_id: n for n, session_id in enumerate(ordered, start=1)}
     if limit is not None:
         ordered = ordered[-limit:]
 
@@ -464,6 +603,7 @@ def session_accuracy(
     return tuple(
         SessionAccuracy(
             session_id=session_id,
+            ordinal=ordinal[session_id],
             started_at=started.get(session_id),
             answered=len(tally[session_id]),
             correct=sum(

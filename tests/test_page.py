@@ -455,15 +455,151 @@ def test_the_station_card_speaks_to_the_teacher(client):
 
 
 def test_the_confusion_view_explains_what_it_actually_draws(client):
-    """읽는 법이 있다. 지금 화면은 방향 없는 쌍 목록이므로 격자(대각선·가로·세로)를 말하지
-    않는다 — 없는 것을 설명하면 틀린 설명이다 (§59). 트랙은 여전히 따로다."""
-    markup = _teacher_markup(_page(client))
+    """읽는 법은 화면이 **실제로 그리는 것**을 설명한다. §59 에서는 방향 없는 쌍 목록이라
+    격자 말을 쓰지 않았고, §60 에서 격자가 되었으므로 이제 격자를 말한다. 문구만 보지 않고
+    그리는 코드가 그 방향으로 그리는지도 본다 — 세로(행) = 보여 준 글자, 가로(열) = 고른 답,
+    같은 글자 칸 = 대각선. 트랙은 여전히 따로다."""
+    body = _page(client)
+    markup = _teacher_markup(body)
     view = markup[markup.index('id="teacherConfusionView"'):]
     text = _visible_text(view)
-    assert "읽는 법" in text and "어느 쪽으로 읽었는지는 나누지 않습니다" in text
-    for grid_word in ("대각선", "세로", "가로"):
-        assert grid_word not in text, grid_word
+    assert "읽는 법" in text
+    for said in ("세로", "보여 준 글자", "가로", "고른 답", "대각선", "맞힌 횟수",
+                 "대각선 밖 숫자가 큰 칸", "예상한 짝"):
+        assert said in text, said
+    # 예전 쌍 목록의 읽는 법은 없다 — 이제 화면에 없는 것을 설명한다.
+    assert "나누지 않습니다" not in text and "목록에 없음" not in text
     assert "따로 봅니다" in text
+
+    draw = _function(body, "renderMatrix")
+    rows = draw.index("for (const shown of payload.letters)")
+    columns = draw.index("for (const given of payload.letters)", rows)
+    assert rows < columns, "바깥 줄(세로)이 보여 준 글자여야 한다"
+    assert 'count.set(key(cell.expected, cell.given)' in draw
+    assert 'if (shown === given) classes.push("diag")' in draw
+    assert 'classes.push("listed")' in draw
+    # 쌍 목록 응답을 읽는 코드가 남아 있지 않다.
+    assert "payload.pairs" not in body
+
+
+def test_the_confusion_view_says_so_when_there_is_no_record(client):
+    """기록이 없으면 빈 격자가 아니라 문장이다. 0 으로 채운 격자는 "기록 없음" 과
+    "전부 0" 을 가르지 못한다 (§60)."""
+    load = _function(_page(client), "loadStats")
+    empty = load.index("if (!payload.items)")
+    assert "아직 기록이 없습니다" in load[empty:load.index("renderMatrix(", empty)]
+
+
+def test_the_confusion_matrix_is_reached_only_from_teacher_mode(client):
+    """혼동 행렬을 부르는 곳은 교사 쪽 `loadStats()` 하나다. 학습자 모드는 부르지도,
+    그릴 자리를 갖지도 않는다 (§52)."""
+    body = _page(client)
+    assert body.count("/api/stats/confusion?") == 1
+    assert "/api/stats/confusion?" in _function(body, "loadStats")
+    callers = [line.strip() for line in body.splitlines()
+               if "loadStats" in line and "function loadStats" not in line]
+    assert sorted(callers) == sorted([
+        "loadStats();",                                                          # setTrack · startTeacher
+        "loadStats();",
+        'el("statsRefresh").addEventListener("click", loadStats);',
+        'if (ui.mode === "teacher" && view === "confusion") { loadStats(); }',
+    ]), callers
+    assert "loadStats();" in _function(body, "setTrack")
+    assert "loadStats();" in _function(body, "startTeacher")
+    learner = _learner_markup(body)
+    for forbidden in ("matrix", "대각선", "statsView", "혼동"):
+        assert forbidden not in learner, forbidden
+
+
+# --------------------------------------------------------------------------- #
+# [판단 필요] J2 ~ J9 (§60)
+# --------------------------------------------------------------------------- #
+
+def test_progress_numbers_sessions_by_their_turn_in_the_track(client):
+    """세션별 정확도는 세션 번호가 아니라 트랙 안 차례다. 공부 세션이 번호를 먹어
+    첫 훈련이 "세션 2" 로 나오던 것을 고쳤다 (J2)."""
+    trend = _function(_page(client), "renderTrend")
+    assert "point.ordinal" in trend and "번째" in trend
+    assert "point.session_id" not in trend
+    assert "sessionWhen(point.started_at)" in trend
+
+
+def test_the_depth_stage_is_explained_without_naming_letters(client):
+    """깊이쌍은 개념만 말한다. 어느 글자인지는 적지 않는다 (§52, J3)."""
+    learner = _learner_markup(_page(client))
+    section = learner[learner.index("<h2>깊이쌍 단계</h2>"):]
+    section = section[:section.index("</section>")]
+    text = _visible_text(section)
+    assert "비슷한 손 모양이 앞뒤로 달라지는 글자 짝이 문항에 나오기 시작하는 단계" in text
+    assert not re.search(r"[A-Za-z]", text), text
+
+
+def test_the_progress_bar_waits_for_a_session(client):
+    """세션 전(문항 패널이 숨은 동안)에는 진행 막대가 없다 (J4)."""
+    rules = _rules(_style(_page(client)))
+    assert any("#trainView:has(#trainPanel[hidden]) .bar" in sel and "display: none" in decl
+               for sel, decl in rules)
+
+
+def test_the_top_bar_darkens_with_the_body_while_the_hand_moves(client):
+    """손이 움직이는 동안 맨 위 머리 줄도 남색이다. 움직임은 없다 (J5, §59)."""
+    rules = _rules(_style(_page(client)))
+    top = [(sel, decl) for sel, decl in rules
+           if '[data-phase="moving"]' in sel and sel.strip().endswith(".topbar")]
+    assert top, "머리 줄을 어둡게 하는 규칙이 없다"
+    for _sel, decl in top:
+        assert "background: var(--navy)" in decl
+        assert not _motion(decl), decl
+
+
+def test_study_keeps_the_recovery_button_and_says_when_to_use_it(client):
+    """[글자 보기 마치기] 는 정상 종료, [세션 끝내고 손 놓기] 는 복구다. 복구를 숨기지
+    않고 문구로 가른다 (§45, §51, J6)."""
+    body = _page(client)
+    learner = _learner_markup(body)
+    row = learner[learner.index('id="studyRecoveryRow"'):]
+    row = row[:row.index("</div>")]
+    assert 'id="studyResetBtn"' in row
+    why = _visible_text(row)
+    assert "막혔을 때만" in why and "[글자 보기 마치기]" in why
+    # 공부가 락을 쥐는 동안 복구 줄이 보인다 — 숨기는 경로를 만들지 않았다.
+    assert "renderStudyRecovery(true);" in _function(body, "startStudy")
+    # 멈추기와 모양이 다르다 — 복구 버튼은 여전히 `.recovery` 안의 밑줄 글자다 (§45).
+    assert 'class="recovery" id="studyRecoveryRow"' in learner
+
+
+def test_study_buttons_follow_the_tab_name(client):
+    """탭 이름이 "글자" 이므로 버튼도 글자 보기다. `data-view` 는 그대로다 (J7)."""
+    body = _page(client)
+    learner = _learner_markup(body)
+    assert '<button class="primary" id="studyStartBtn" type="button">글자 보기 시작</button>' in learner
+    assert '<button id="studyEndBtn" type="button">글자 보기 마치기</button>' in learner
+    assert 'data-view="study">글자</button>' in learner
+    for old in ("공부 시작", "공부 마치기", "공부가 끝났습니다"):
+        assert old not in body, old
+
+
+def test_the_plan_table_shows_hold_in_seconds_per_letter(client):
+    """계획 표의 유지 시간은 초다. 글자 하나를 보여 주는 시간이라 "글자당" 이다 (J8)."""
+    plan = _function(_page(client), "renderPlan")
+    assert "`글자당 ${seconds(item.hold_ms)}`" in plan
+    assert "}ms`" not in plan
+
+
+def test_the_station_card_is_read_again_after_approval_and_release(client):
+    """승인 · 거부 · 손 놓기 뒤에 한 번 더 읽는다. 주기적으로 묻지는 않는다 (§48, J9)."""
+    body = _page(client)
+    decide = _function(body, "decide")
+    reset = _function(body, "resetLock")
+    # try/catch 밖 — 성공이든 실패든 읽는다.
+    assert decide.rstrip().endswith("loadStation();")
+    assert reset.rstrip().endswith("loadStation();")
+    for timer in re.findall(r"setInterval\(([^,]+)", body):
+        assert "loadStation" not in timer, timer
+    assert "setTimeout(loadStation" not in body
+    note = _visible_text(_teacher_markup(body))
+    assert "들어올 때 읽은 상태입니다" not in note
+    assert "[세션 끝내고 손 놓기] 를 누른 뒤에" in note
 
 
 def test_teacher_screen_shows_no_document_references(client):

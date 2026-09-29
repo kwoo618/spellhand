@@ -52,6 +52,7 @@ from server.stats import (
     TrackSummary,
     accuracy_by_hold_ms,
     confusion_counts,
+    confusion_matrix as build_confusion_matrix,
     depth_unlock_progress,
     depth_unlocked,
     session_accuracy,
@@ -585,18 +586,35 @@ def confusion_matrix(
     """혼동 행렬. `track` 은 **필수**다 (PRD 11장).
 
     기본값을 두지 않는 것은 실수로 두 트랙을 합쳐 보는 일을 막기 위해서다.
+
+    `expected × given` 이다 (DECISIONS.md §60). 세로가 로봇손이 보여 준 글자,
+    가로가 학습자가 고른 답, `expected == given` 이 대각선(맞게 읽음)이다.
+    예전의 `pairs`(방향 없는 쌍 · 횟수)는 싣지 않는다 — 약점 쌍 선정과 세션
+    요약은 여전히 쌍 카운터를 쓰고, 이 창구만 바뀌었다.
     """
     station = _station(request)
     with station.database.session() as db:
-        counts = confusion_counts(
+        matrix = build_confusion_matrix(
             db, station.config, track, learner_id=learner_id
         )
     return {
-        "track": track,
-        "pairs": [
-            {"pair": list(c.pair), "count": c.count, "listed": c.listed}
-            for c in counts
+        "track": matrix.track,
+        "letters": list(matrix.letters),
+        "cells": [
+            {
+                "expected": c.expected,
+                "given": c.given,
+                "count": c.count,
+                "diagonal": c.diagonal,
+                "listed": c.listed,
+            }
+            for c in matrix.cells
         ],
+        "items": matrix.items,
+        "skipped": dict(matrix.skipped),
+        # 설정의 혼동쌍. 한 번도 틀리지 않은 등재 칸도 격자에 표시하려면 필요하다
+        # — "예상한 쌍이 실제로 틀렸는가" 에는 0 도 답이다.
+        "listed_pairs": [list(p.pair) for p in station.config.confusion_pairs],
     }
 
 
@@ -1067,6 +1085,8 @@ def learner_progress(request: Request, learner_name: str) -> Dict[str, Any]:
                 "sessions": [
                     {
                         "session_id": point.session_id,
+                        # 이 트랙에서 몇 번째 세션인가. 화면은 이것을 쓴다 (§60).
+                        "ordinal": point.ordinal,
                         "started_at": (
                             point.started_at.isoformat()
                             if point.started_at is not None

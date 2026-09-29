@@ -204,6 +204,51 @@ def test_confusion_stats_require_a_track(client):
     assert client.get("/api/stats/confusion").status_code == 422
 
 
+def test_the_confusion_endpoint_is_a_directed_matrix_with_the_diagonal(client, station):
+    """`expected × given` 칸이 온다. 맞게 읽은 위치가 대각선 칸으로 들어 있고,
+    틀린 칸은 방향을 가진다 — 보여 준 글자가 `expected` 다 (§60)."""
+    sid = start(client)["session_id"]
+    _answer_wrong_twice(client, station, sid)
+    body = client.get(
+        "/api/stats/confusion", params={"track": TRACK_DISCRIMINATION}
+    ).json()
+
+    assert body["track"] == TRACK_DISCRIMINATION
+    assert body["letters"] == sorted(station.config.poses)
+    assert "pairs" not in body
+    cells = body["cells"]
+    assert {"expected", "given", "count", "diagonal", "listed"} <= set(cells[0])
+    diagonal = [c for c in cells if c["diagonal"]]
+    wrong = [c for c in cells if not c["diagonal"]]
+    assert diagonal and wrong
+    assert all(c["expected"] == c["given"] and not c["listed"] for c in diagonal)
+    assert all(c["expected"] != c["given"] for c in wrong)
+    # 두 번 틀렸다. 한 번에 한 칸씩, 첫 글자에서.
+    assert sum(c["count"] for c in wrong) == 2
+    assert body["items"] == 2
+    # 한 번도 틀리지 않은 등재 쌍도 격자에 표시할 수 있게 설정의 혼동쌍이 온다.
+    assert body["listed_pairs"] == [
+        list(p.pair) for p in station.config.confusion_pairs
+    ]
+    listed = {frozenset(p) for p in body["listed_pairs"]}
+    for cell in wrong:
+        assert cell["listed"] == (frozenset((cell["expected"], cell["given"])) in listed)
+
+
+def test_the_confusion_endpoint_keeps_the_tracks_apart(client, station):
+    """판별 기록은 단어 행렬에 없다. 트랙마다 따로 묻고 따로 온다."""
+    sid = start(client)["session_id"]
+    _answer_wrong_twice(client, station, sid)
+    disc = client.get(
+        "/api/stats/confusion", params={"track": TRACK_DISCRIMINATION}
+    ).json()
+    word = client.get("/api/stats/confusion", params={"track": TRACK_WORD}).json()
+
+    assert disc["cells"] and disc["items"] == 2
+    assert word["cells"] == [] and word["items"] == 0
+    assert word["track"] == TRACK_WORD
+
+
 def test_the_index_redirects_to_the_station(client):
     response = client.get("/", follow_redirects=False)
     assert response.status_code in (302, 307)
@@ -1256,9 +1301,13 @@ def test_progress_carries_no_confusion_data(client, station):
     쌍·글자·최근 문항이 없어야 한다."""
     sid = start(client)["session_id"]
     _answer_wrong_twice(client, station, sid)
-    assert client.get(
-        "/api/stats/confusion", params={"track": TRACK_DISCRIMINATION}
-    ).json()["pairs"], "혼동 기록이 남지 않아 이 테스트가 아무것도 보지 않는다"
+    # 응답이 행렬이 된 뒤로(§60) 혼동 기록은 대각선 밖 칸이다.
+    assert any(
+        not cell["diagonal"]
+        for cell in client.get(
+            "/api/stats/confusion", params={"track": TRACK_DISCRIMINATION}
+        ).json()["cells"]
+    ), "혼동 기록이 남지 않아 이 테스트가 아무것도 보지 않는다"
 
     body = client.get("/api/learners/haru/progress").json()
     keys = set(_all_keys(body))
@@ -1268,6 +1317,20 @@ def test_progress_carries_no_confusion_data(client, station):
         "accuracy_by_hold_ms",
     ):
         assert forbidden not in keys, forbidden
+
+
+def test_progress_numbers_sessions_within_each_track(client, station):
+    """공부 세션은 번호를 먹지 않는다. 첫 훈련은 세션 id 가 무엇이든 "1번째" 다 (§60)."""
+    study = client.post("/api/study-sessions", json={"learner_name": "haru"}).json()
+    client.post(f"/api/study-sessions/{study['session_id']}/end")
+    session = _run_session_correctly(client, station)
+    assert session["session_id"] > study["session_id"]
+
+    body = client.get("/api/learners/haru/progress").json()
+    for track in (TRACK_DISCRIMINATION, TRACK_WORD):
+        points = body["by_track"][track]["sessions"]
+        assert [p["ordinal"] for p in points] == [1], track
+        assert points[0]["session_id"] == session["session_id"]
 
 
 def test_progress_reports_each_track_separately(client, station):
