@@ -19,3 +19,6 @@ dist/
 # poses.json 에서 생성되는 산출물이라 커밋하지 않는다.
 # 커밋해 두면 poses.json 만 고치고 재생성을 잊은 채 펌웨어를 올리는 사고가 난다.
 firmware/hand_controller/calibration.h
+
+# 제3자 판별 파일럿 정답지. 참가자가 보면 파일럿이 무효가 된다.
+tools/pilot_key_*.txt
