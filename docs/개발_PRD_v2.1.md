@@ -697,6 +697,8 @@ def generate_items(stats, count, track, target_pairs=None):
 
 **전송:** stdio. **클라이언트:** 자체 에이전트 + Claude Desktop (시연 ⑤ 필수).
 
+> **승인은 13장(에이전트 계획) 경로에만 있다.** MCP 도구에는 사람 승인 단계가 없고, 스키마(각도·flex 파라미터 없음)와 안전 게이트가 막는다. 승인된 계획의 세션은 `present_sequence` · `demo_letter` 로 움직일 수 없다 — `PLAN_SESSION_RESTRICTED` (DECISIONS §62, 2026-09-29 추가).
+
 ### 12.1 도구
 
 #### 1층 · 조회 (부작용 없음)

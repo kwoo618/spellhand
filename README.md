@@ -270,8 +270,22 @@ Claude Desktop 과 에이전트가 스테이션의 도구를 부를 때마다 �
 > (`POST /api/agent/plan` → [승인])에 있다. **MCP 도구 9개에는 스테이션 쪽 승인 단계가 없다.**
 > `start_session` 은 부르는 즉시 세션을 열고 락을 잡으며, `present_sequence` 는 LLM 이 준
 > 글자열을 바로 구동한다(`/sequence` = "MCP·에이전트의 자유 구동", `server/routes/api.py`).
-> MCP 경로를 막는 것은 승인이 아니라 **스키마(각도 없음)와 안전 게이트**다. MCP 로 계획을
-> 만들거나 승인을 요청하는 도구는 없다.
+> MCP 경로를 막는 것은 승인이 아니라 **스키마(각도·flex 파라미터 없음)와 요청마다 도는 검사**다
+> — 순서대로 `LOCK_NOT_HELD` → `PLAN_SESSION_RESTRICTED` → 세션 상태(`SESSION_STATE`·`DEVICE_BUSY`)
+> → 안전 게이트 ①~⑦(`LOCK_NOT_HELD` · `UNSUPPORTED_LETTERS` · `CURRICULUM_VIOLATION` · flex·각도
+> 이중 clamp · `RATE_LIMIT` · `SESSION_QUOTA` · `DEVICE_BUSY`). 조건은
+> [기획서 6.5 의 "구현 시 달라진 점"](docs/지문자_학습_로봇손_기획서_v3.md) 표에 있다.
+> MCP 로 계획을 만들거나 승인을 요청하는 도구는 없다.
+>
+> **승인된 계획의 세션은 계획대로만 움직인다.** 그 세션 id 로 `present_sequence` · `demo_letter`
+> 를 부르면 `PLAN_SESSION_RESTRICTED`(409, JSON)로 거부된다. 계획 세션은 학습자 화면의 [시작]
+> (`/planned`)으로만 나간다. 계획 세션이 아닌 세션(MCP `start_session`, 학습자 화면 직접 시작)은
+> 지금처럼 자유 구동된다 ([DECISIONS §62](DECISIONS.md)).
+>
+> **로컬 전용 · 단일 사용자 전제.** 스테이션 REST 에는 인증이 없다. 그래서 MCP 가 아니어도
+> **같은 기계에서 도는 무엇이든 요청 두 번**(`POST /api/sessions` → `POST /api/sessions/{id}/sequence`)
+> 으로 손을 움직일 수 있다. 실습실 PC 한 대에서 한 사람이 쓰는 졸업작품 범위의 의도된 전제이고,
+> 네트워크에 열어 두는 용도가 아니다. 서버는 `127.0.0.1` 에만 띄운다.
 
 ### (나) 도구 전체 목록
 
@@ -288,8 +302,8 @@ Claude Desktop 과 에이전트가 스테이션의 도구를 부를 때마다 �
 | `start_session` | 세션 | 세션을 열고 **로봇손 락을 잡는다** | `learner_name`, `plan?`(`discrimination_items`, `word_items`) | `session_id`, `total_items`, `state` | 없음 (즉시 락) |
 | `submit_answer` | 세션 | 직전 구동 문항을 채점. 오답 1회째엔 정답을 주지 않는다 | `session_id`, `answer` | `result`(correct/wrong/order/…), `retry`, `finished`, `expected` | 없음 |
 | `end_session` | 세션 | 세션 종료, 락 해제, 안전 자세 | `session_id` | 트랙별 요약, 트랙별 혼동 | 없음 |
-| `present_sequence` | 구동 | 글자열을 손으로 표현 (채점 대상). 손이 끝날 때까지 기다린다 | `session_id`, `letters`, `track`, `boundary`(explicit/direct), `hold_ms?` | `index/total`, 실제로 쓰인 `hold_ms`(범위 밖이면 잘린 값), `transition_ms` | 없음 — 안전 게이트 |
-| `demo_letter` | 구동 | 글자 **하나** 시범. 채점·기록 없음 | `session_id`, `letter`, `hold_ms?` | `letter`, `hold_ms`, `transition_ms` | 없음 — 안전 게이트 |
+| `present_sequence` | 구동 | 글자열을 손으로 표현 (채점 대상). 손이 끝날 때까지 기다린다 | `session_id`, `letters`, `track`, `boundary`(explicit/direct), `hold_ms?` | `index/total`, 실제로 쓰인 `hold_ms`(범위 밖이면 잘린 값), `transition_ms` | 없음 — 안전 게이트. 승인된 계획 세션에서는 거부 (`PLAN_SESSION_RESTRICTED`) |
+| `demo_letter` | 구동 | 글자 **하나** 시범. 채점·기록 없음 | `session_id`, `letter`, `hold_ms?` | `letter`, `hold_ms`, `transition_ms` | 없음 — 안전 게이트. 승인된 계획 세션에서는 거부 (`PLAN_SESSION_RESTRICTED`) |
 
 **어느 도구에도 각도·flex·전이 시간 파라미터가 없다.** `hold_ms`(글자당 유지 시간)가 LLM 이
 줄 수 있는 유일한 시간 값이고, 설정 범위(800~3000ms)로 잘린다.
@@ -593,7 +607,7 @@ tools/pilot.py           제3자 판별 파일럿 (임시 도구, 세션·DB 를
 scripts/verify.ps1       완료 판정
 tests/                   pytest
 docs/                    기획서 v3, 개발 PRD v2.1(기준), 하드웨어 측정 요청서
-DECISIONS.md             설계 결정 기록 §1~§61 — 무엇을 왜 그렇게 정했는가. 문서와 코드가 어긋나 보이면 여기를 먼저 본다
+DECISIONS.md             설계 결정 기록 §1~§62 — 무엇을 왜 그렇게 정했는가. 문서와 코드가 어긋나 보이면 여기를 먼저 본다
 CLAUDE.md                작업 규칙과 현재 상태
 ```
 

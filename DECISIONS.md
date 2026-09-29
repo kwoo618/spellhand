@@ -4085,3 +4085,77 @@ listed}` 만 준다 — 방향(무엇을 무엇으로 읽었나)이 합쳐져 �
   **지우지 않았다.** 파일에 장치 모드가 적혀 있지 않고(`pilot.py` 는 콘솔에만 찍는다) mock 연습인지
   실기 기록인지 가릴 근거가 없다. 판단은 사용자에게 남긴다. 다음 실행부터 가릴 수 있게 하려면
   정답지 머리에 장치 모드를 적으면 된다 — 요청받지 않아 하지 않았다 (TBD)
+
+## 62. 승인된 계획의 세션은 계획대로만 움직인다. MCP 에는 승인을 넣지 않는다 (지금은)
+
+**배경.** MCP 경로에 사람 승인이 있는지 코드로 확인했다. 결과는 둘이다.
+
+1. **MCP 도구에는 승인 단계가 없다.** `start_session` 은 부르는 즉시 `SessionController.start()`
+   → `SessionLock.acquire()` 로 락을 잡고, `present_sequence` · `demo_letter` 는
+   `/sequence` · `/demo-letter` → `present_letters()` → `_present()` → 게이트 → `move_step()` 으로
+   바로 손을 움직인다. 이것은 PRD 12.1("`start_session` → `session_id`, 락 획득")·12.3(시연 ⑤
+   대사) 그대로다. 승인은 13장 경로(`/agent/plan` → `/agent/plans/{id}/approve` → `/planned`)에만 있다.
+2. **승인된 계획의 세션도 `/sequence` · `/demo-letter` 로 움직일 수 있었다.** 두 라우트는
+   `_require_lock` 로 "락을 쥔 세션인가" 만 보고 "계획 세션인가" 는 보지 않았다. 승인된 세션 id 를
+   알면 계획에 없는 글자열을 낼 수 있었다 — 승인이 "무엇을 실행하는가" 를 지키지 못했다.
+
+### 결정 — 계획 세션의 자유 구동을 막는다
+
+- `server/safety.py` 에 `PlanSessionRestrictedError` (`code = "PLAN_SESSION_RESTRICTED"`, 409).
+  `SafetyError` 를 이으므로 기존 처리기가 `{code, detail}` JSON 으로 돌려준다 — 500 이 나가지 않는다
+  (§61 과 같은 이유).
+- `server/routes/api.py` `_refuse_plan_session()` — `/sequence` 와 `/demo-letter` 에서 `_require_lock`
+  **바로 뒤**에 부른다. `station.plans.for_session()` 이 찾으면 거부, `PlanNotFoundError` 면 통과.
+  `/sessions/open` 이 이미 쓰는 판정 방식 그대로다.
+- **게이트 ①~⑦ 에 넣지 않았다.** 계획 세션인지는 `PlanStore` 가 알고 게이트는 모른다. 게이트에
+  계획 저장소를 물리면 게이트가 에이전트 계층에 의존하게 된다. 라우트 앞단 검사라서 통과 범위를
+  넓히지 않는다 (§46.3 의 `_require_lock` 과 같은 자리).
+- 락을 쥐지 않은 호출은 지금처럼 `LOCK_NOT_HELD` 가 먼저다. 순서를 바꾸면 기존 거부 코드가 달라진다.
+- **`/planned` 는 건드리지 않았다.** 학습자 훈련이 이 경로로 돈다.
+- 계획 세션이 아닌 세션(MCP `start_session`, 학습자 화면 직접 시작)은 그대로 자유 구동된다.
+  공부 모드는 별도 컨트롤러(`server/study.py`)라 이 라우트를 쓰지 않는다.
+- MCP 어댑터의 `NEXT_STEP` 에 이 코드의 다음 단계를 더했고(`mcp_server/server.py`), 교사 모드
+  로그 패널의 차단 줄에 한국어 한 줄을 덧붙였다(`web/station.html` `BLOCKED_TEXT`, 코드와 원문은
+  그대로 — §57 규칙). 화면(웹)은 `/sequence` · `/demo-letter` 를 부르지 않는다.
+
+### 결정 — MCP 에 승인 단계는 넣지 않는다. 나중에 다시 볼 수 있다
+
+- `StoredPlan` 은 문항 목록을 **통째로** 담고 승인 뒤 큐로 내보내는 구조다. MCP 는 호출마다 글자를
+  준다. 그대로 끼우면 "호출마다 승인" 이 되거나, MCP 쪽에 계획 제출 도구를 새로 만들어 구동 경로를
+  `/planned` 로 바꿔야 한다.
+- `tests/test_mcp.py` 31개 중 약 21개가 MCP `start_session` 으로 세션을 여는 것에 기대고 있다 (정적
+  검색으로 센 수).
+- 제3자 판별 파일럿을 앞두고 구동 경로를 다시 설계할 시점이 아니다.
+
+MCP 구동을 막는 것은 지금도 스키마(각도·flex·전이 시간 파라미터 없음)와 요청별 검사다. 다시 볼
+조건: MCP 로 실제 학습자 세션을 돌리게 되거나, 스테이션을 한 기계 밖으로 여는 경우.
+
+**전제를 적어 둔다.** REST 에 인증이 없으므로 같은 기계의 무엇이든 요청 두 번(`POST /api/sessions`
+→ `/sequence`)으로 손을 움직일 수 있다. 로컬 전용 · 단일 사용자 도구라는 졸업작품 범위의 전제다
+(README 4장, 기획서 6.5 의 덧붙인 주석).
+
+### 기획서 11.1 의 로그 예시가 틀린 이유
+
+예시는 "→ 학습자 통계 조회 → 지원 글자 조회 → 문항 후보 조회 ← 계획 생성 ⏸ 승인 대기" 를 한 흐름으로
+보인다. 에이전트(`server/agent.py`)는 조회를 MCP 로 하지 않고 같은 프로세스에서 DB·설정을 직접
+읽는다(§46 의 REST 클라이언트는 MCP 서버 쪽이다). 그래서 조회 줄은 찍히지 않고 계획 쪽에서는
+`plan_ready` · `plan_decided` 두 줄만 나온다. 2026-09-29 Mock 에서 실제로 돌린 로그로 기획서에 덧붙였다.
+
+**문서를 고친 방식.** 기획서는 제출본이라 원문을 지우지 않았다. 6.5 와 11.1 끝에 "구현 시 달라진 점"
+인용 블록을 **덧붙였다.** PRD 12장은 코드와 맞으므로 내용은 두고 "승인은 13장 경로에만 있다" 한 줄을
+더했다.
+
+### 테스트
+
+- `tests/test_agent.py` — `test_a_plan_session_refuses_letters_chosen_by_the_caller`,
+  `test_a_plan_session_refuses_a_demo_letter`, `test_a_plan_session_still_runs_through_the_planned_route`,
+  `test_a_session_not_from_a_plan_still_drives_freely`
+- `tests/test_safety.py` — 기존 두 테스트(`test_every_rejection_is_a_safety_error`,
+  `test_error_codes_are_unique`)의 목록에 새 오류를 더했다
+- `tests/test_mcp.py` 는 고치지 않았고 그대로 통과한다
+
+### 확인 (Mock, 스크래치 복제본의 DB — `station.db` 는 열지 않았다)
+
+실제 브라우저에서 교사 모드 계획 생성 → [승인] → 학습자 [시작] → 1번 문항 표현(`POST /planned` 200)
+→ 답 제출 "정답". 같은 세션에 MCP `present_sequence` · `demo_letter` 와 REST `/sequence` 를 부르면
+409 `PLAN_SESSION_RESTRICTED` JSON. 그 뒤 [다음 문항] 도 `/planned` 로 2번 문항까지 정상.
