@@ -93,6 +93,10 @@ NEXT_STEP: Dict[str, str] = {
     ),
     "SESSION_STATE": "call get_station_status() to see where the session is",
     "SESSION_FINISHED": "call end_session() for the summary",
+    "PLAN_SESSION_RESTRICTED": (
+        "this session runs a plan a person approved and moves only through "
+        "that plan; do not drive it with present_sequence or demo_letter"
+    ),
 }
 
 INSTRUCTIONS = """\

@@ -906,6 +906,71 @@ def test_ending_the_session_closes_the_planned_route(http, station):
 
 
 # --------------------------------------------------------------------------- #
+# 계획 세션은 계획대로만 움직인다 (DECISIONS.md §62)
+# --------------------------------------------------------------------------- #
+
+def test_a_plan_session_refuses_letters_chosen_by_the_caller(http, station):
+    """승인된 세션 id 를 알아도 `/sequence` 로 계획 밖 글자를 낼 수 없다."""
+    _, session_id = approved(http, station)
+
+    response = http.post(
+        f"/api/sessions/{session_id}/sequence",
+        json={"letters": "BDE", "track": TRACK_DISCRIMINATION, "boundary": "explicit"},
+    )
+    assert response.status_code == 409, response.text
+    body = response.json()
+    assert body["code"] == "PLAN_SESSION_RESTRICTED"
+    assert "planned" in body["detail"]
+    # 손은 움직이지 않았고 세션도 그대로다.
+    assert station.gate.requests_for(session_id) == 0
+    assert station.controllers[session_id].index == 0
+    assert station.lock.holder() == session_id
+
+
+def test_a_plan_session_refuses_a_demo_letter(http, station):
+    _, session_id = approved(http, station)
+
+    response = http.post(
+        f"/api/sessions/{session_id}/demo-letter", json={"letter": "V"}
+    )
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == "PLAN_SESSION_RESTRICTED"
+    assert station.gate.requests_for(session_id) == 0
+
+
+def test_a_plan_session_still_runs_through_the_planned_route(http, station):
+    """막는 것은 자유 구동뿐이다. 거부 뒤에도 계획은 처음부터 그대로 나간다."""
+    _, session_id = approved(http, station)
+    refused = http.post(
+        f"/api/sessions/{session_id}/sequence",
+        json={"letters": "BDE", "track": TRACK_DISCRIMINATION, "boundary": "explicit"},
+    )
+    assert refused.json()["code"] == "PLAN_SESSION_RESTRICTED"
+
+    response = http.post(f"/api/sessions/{session_id}/planned")
+    assert response.status_code == 200, response.text
+    assert response.json()["remaining_items"] == 2
+    assert station.controllers[session_id]._active_answer() == "VWB"
+    assert answer(http, station, session_id).json()["result"] == "correct"
+
+
+def test_a_session_not_from_a_plan_still_drives_freely(http, station):
+    """직접 시작한 세션(MCP `start_session` 과 같은 경로)의 자유 구동은 그대로다."""
+    started = http.post(
+        "/api/sessions", json={"learner_name": "haru", "source": "agent", **SMALL}
+    ).json()
+    session_id = started["session_id"]
+
+    response = http.post(
+        f"/api/sessions/{session_id}/sequence",
+        json={"letters": "VWB", "track": TRACK_DISCRIMINATION, "boundary": "explicit"},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "presented"
+    assert station.controllers[session_id]._active_answer() == "VWB"
+
+
+# --------------------------------------------------------------------------- #
 # HITL 이 로그 패널에 남는가 (시연 ⑥ 라이브 정지)
 # --------------------------------------------------------------------------- #
 

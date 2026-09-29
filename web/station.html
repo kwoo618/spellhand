@@ -2779,6 +2779,15 @@ const CHECK_TEXT = {
   word_repeat_boundary: "같은 글자가 연달아 있는 단어라 또박또박으로 바꿨습니다",
 };
 
+/**
+ * 로그의 차단 줄 → 교사가 읽을 한 줄. `CHECK_TEXT` 와 같은 규칙이다 — 코드와
+ * 서버 원문은 그대로 남기고 문장을 덧붙인다. 여기 없는 코드는 문장 없이 나온다.
+ */
+const BLOCKED_TEXT = {
+  plan_session_restricted:
+    "승인된 계획의 세션은 계획대로만 움직입니다. 계획에 없는 글자를 움직이려던 호출을 막았습니다",
+};
+
 // 조치할 것을 무엇이 일어났는가로 묶는다. 순서가 곧 읽는 순서다.
 const ACTION_GROUP = [
   ["removed", "계획에서 뺀 문항"],
@@ -2977,6 +2986,7 @@ function appendLog(event) {
       // 시연 ⑥ 의 핵심. 거부 코드와 사유가 둘 다 읽혀야 한다 (PRD 15.2).
       item.className = "blocked";
       add(body, "div", "reason", `차단: ${event.reason || "UNKNOWN"}`);
+      if (BLOCKED_TEXT[event.reason]) add(body, "div", "summary", BLOCKED_TEXT[event.reason]);
       if (event.name) add(body, "div", "name", event.name);
       if (event.detail) add(body, "div", "detail", event.detail);
       break;

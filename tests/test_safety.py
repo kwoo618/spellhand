@@ -25,6 +25,7 @@ from server.safety import (
     DeviceNotIdleError,
     LockNotHeldError,
     LockUnavailableError,
+    PlanSessionRestrictedError,
     RateLimitError,
     SafetyError,
     SafetyGate,
@@ -424,6 +425,7 @@ def test_every_rejection_is_a_safety_error():
         RateLimitError,
         SessionQuotaExceededError,
         DeviceNotIdleError,
+        PlanSessionRestrictedError,
     ):
         assert issubclass(error, SafetyError)
         assert error.code != SafetyError.code
@@ -439,5 +441,6 @@ def test_error_codes_are_unique():
         RateLimitError.code,
         SessionQuotaExceededError.code,
         DeviceNotIdleError.code,
+        PlanSessionRestrictedError.code,
     ]
     assert len(set(codes)) == len(codes)

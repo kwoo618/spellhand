@@ -35,7 +35,11 @@ from server.items import (
     word_violations,
 )
 from server.routes.events import MCP_LOG_CHANNEL
-from server.safety import LockNotHeldError, UnsupportedLettersError
+from server.safety import (
+    LockNotHeldError,
+    PlanSessionRestrictedError,
+    UnsupportedLettersError,
+)
 from server.session import (
     DIFFICULTY_LADDER,
     AnswerOutcome,
@@ -386,6 +390,7 @@ def present_sequence(
     """
     station = _station(request)
     _require_lock(station, session_id)
+    _refuse_plan_session(station, session_id)
     controller = _controller(request, session_id)
 
     letters = str(body.get("letters") or "").strip()
@@ -416,6 +421,7 @@ def demo_letter(
     """
     station = _station(request)
     _require_lock(station, session_id)
+    _refuse_plan_session(station, session_id)
     controller = _controller(request, session_id)
 
     letter = str(body.get("letter") or "").strip()
@@ -453,6 +459,27 @@ def _require_lock(station, session_id: int) -> None:
             f"session {session_id} does not hold the device lock "
             f"(holder={holder}); no motion is allowed without it"
         )
+
+
+def _refuse_plan_session(station, session_id: int) -> None:
+    """승인된 계획의 세션이면 호출자가 고른 구동을 거부한다 (DECISIONS.md §62).
+
+    계획 세션은 `/planned` 로만 움직인다. 여기를 열어 두면 승인된 세션 id 를 아는
+    누구든 계획에 없는 글자를 낼 수 있고, 승인이 "이 계획대로만 움직인다" 를
+    보장하지 못한다. 계획 세션이 아닌 세션(직접 시작, MCP `start_session`)은
+    그대로 지나간다.
+
+    `_require_lock` 뒤에 둔다. 락을 쥐지 않은 호출은 지금처럼 `LOCK_NOT_HELD` 다.
+    """
+    try:
+        stored = station.plans.for_session(session_id)
+    except PlanNotFoundError:
+        return
+    raise PlanSessionRestrictedError(
+        f"session {session_id} was started from approved plan {stored.plan_id}; "
+        f"it moves only through its plan (POST /api/sessions/{session_id}/planned), "
+        f"not through letters chosen by the caller"
+    )
 
 
 def _clamp_hold_ms(station, value: Any) -> int:

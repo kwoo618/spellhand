@@ -49,6 +49,7 @@ __all__ = [
     "RateLimitError",
     "SessionQuotaExceededError",
     "DeviceNotIdleError",
+    "PlanSessionRestrictedError",
     "SessionLock",
     "SafetyGate",
     "PoseStep",
@@ -153,6 +154,18 @@ class DeviceNotIdleError(SafetyError):
     """
 
     code = "DEVICE_BUSY"
+    http_status = 409
+
+
+class PlanSessionRestrictedError(SafetyError):
+    """승인된 계획으로 만든 세션에 호출자가 고른 글자를 구동하려 했다.
+
+    게이트 ①~⑦ 의 하나가 아니다. 그 앞, 라우트에서 건다 — 계획 세션인지는
+    `PlanStore` 가 알고 게이트는 모른다. 계획 세션은 `/planned` 로만 움직인다.
+    승인은 "이 계획대로만 움직인다" 여야 하기 때문이다 (DECISIONS.md §62).
+    """
+
+    code = "PLAN_SESSION_RESTRICTED"
     http_status = 409
 
 
