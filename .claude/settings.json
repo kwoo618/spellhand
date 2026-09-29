@@ -2,18 +2,29 @@
   "permissions": {
     "defaultMode": "default",
     "allow": [
-      "Bash(python -m pytest:*)",
-      "Bash(bash scripts/verify.sh)",
+      "Bash(.venv/Scripts/python.exe -m pytest:*)",
+      "Bash(.\\.venv\\Scripts\\python.exe -m pytest:*)",
+      "Bash(powershell -ExecutionPolicy Bypass -File scripts\\verify.ps1)",
+      "Bash(powershell -ExecutionPolicy Bypass -File scripts/verify.ps1)",
       "Bash(git status:*)",
       "Bash(git diff:*)",
+      "Bash(git log:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)"
     ],
     "ask": [
       "Edit(config/**)",
       "Edit(firmware/**)",
+      "Bash(.venv/Scripts/python.exe tools/gen_calibration.py:*)",
+      "Bash(.\\.venv\\Scripts\\python.exe tools\\gen_calibration.py:*)",
       "Bash(python tools/gen_calibration.py:*)",
-      "Bash(alembic:*)",
+      "Bash(.venv/Scripts/python.exe tools/migrate_db.py:*)",
+      "Bash(.\\.venv\\Scripts\\python.exe tools\\migrate_db.py:*)",
+      "Bash(python tools/migrate_db.py:*)",
+      "Bash(.venv/Scripts/python.exe tools/pilot.py:*)",
+      "Bash(.\\.venv\\Scripts\\python.exe tools\\pilot.py:*)",
+      "Bash(DEVICE_MODE=serial:*)",
+      "Bash(SPELLHAND_LIVE_LLM=1:*)",
       "Bash(arduino-cli:*)"
     ],
     "deny": [
@@ -21,6 +32,7 @@
       "Edit(.env)",
       "Edit(firmware/hand_controller/calibration.h)",
       "Edit(station.db)",
+      "Edit(station_old_*.db)",
       "Bash(sqlite3:*)",
       "Bash(rm:*)",
       "Bash(git push:*)"
