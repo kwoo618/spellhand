@@ -115,8 +115,12 @@ class TrainingSession(Base):
     __tablename__ = "sessions"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    learner_id: Mapped[int] = mapped_column(
-        Integer, ForeignKey("learners.id"), nullable=False
+    # 공부 세션(`source="study"`)만 NULL 이다. 공부는 이름을 받지 않는다 —
+    # 기록이 없는데 이름을 받으면 학습자 표에 훈련한 적 없는 사람이 생긴다
+    # (DECISIONS.md §63). 훈련 세션은 여전히 학습자를 가진다. 예전 DB 는
+    # `NOT NULL` 이다 — `sessions_allow_no_learner()` 와 `tools/migrate_db.py`.
+    learner_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("learners.id"), nullable=True
     )
     status: Mapped[str] = mapped_column(Text, nullable=False)
     source: Mapped[str] = mapped_column(Text, nullable=False)
@@ -238,6 +242,20 @@ class Database:
 
     def drop_all(self) -> None:
         Base.metadata.drop_all(self._engine)
+
+    def sessions_allow_no_learner(self) -> bool:
+        """`sessions.learner_id` 가 NULL 을 받는가. 예전 DB 는 받지 않는다.
+
+        `create_all()` 은 있는 표를 고치지 않으므로, §63 이전에 만든 DB 는
+        `tools/migrate_db.py` 를 돌리기 전까지 `NOT NULL` 그대로다. 그래도
+        서버는 뜬다 — 막히는 것은 공부 시작 하나뿐이다.
+        """
+        with self._engine.connect() as connection:
+            columns = connection.exec_driver_sql("PRAGMA table_info(sessions)").fetchall()
+        for _cid, name, _type, notnull, _default, _pk in columns:
+            if name == "learner_id":
+                return not notnull
+        return False
 
     def _ensure_lock_row(self) -> None:
         """device_lock 의 단일 행을 만들어 둔다. 없으면 락을 잡을 수 없다."""

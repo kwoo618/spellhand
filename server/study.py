@@ -15,6 +15,9 @@
 그래서 공부도 `sessions` 에 한 줄을 남기되 `source="study"` 로 가른다. 문항이
 없는 행이므로 세션 수·정확도·추이 어디에도 잡히지 않는다 — 전부 `items` 에서
 세기 때문이다 (`count_answered_sessions` 도 답한 세션만 센다).
+
+**이름을 받지 않는다** (§63). 그 행의 `learner_id` 는 NULL 이다. 이름을 받아
+`learners` 에 행을 만들면, 공부만 한 사람이 교사 모드 학습자 목록에 뜬다.
 """
 
 from __future__ import annotations
@@ -29,14 +32,19 @@ from server.db import (
     TRACK_DISCRIMINATION,
     Database,
     TrainingSession,
-    get_or_create_learner,
     utcnow,
 )
 from server.device import DeviceAdapter
 from server.safety import PURPOSE_DEMO, DeviceNotIdleError, SafetyGate, SessionLock
-from server.session import SessionStateError, move_step
+from server.session import SessionError, SessionStateError, move_step
 
-__all__ = ["STUDY_SOURCE", "REFERENCE_POSES", "StudyController", "letters_payload"]
+__all__ = [
+    "STUDY_SOURCE",
+    "REFERENCE_POSES",
+    "StudyController",
+    "StudySchemaOutdatedError",
+    "letters_payload",
+]
 
 # `sessions.source` 의 값. PRD 8장의 agent|rule|manual 에 하나를 더했다 (§56).
 STUDY_SOURCE = "study"
@@ -45,6 +53,17 @@ STUDY_SOURCE = "study"
 # 중립은 또박또박 문항에서 글자 사이에 지나가고, 안전은 손이 쉬는 자세다.
 # 둘은 서로를 대신하지 않는다 (R3).
 REFERENCE_POSES = ("neutral", "safe")
+
+
+class StudySchemaOutdatedError(SessionError):
+    """DB 가 §63 이전 것이라 학습자 없는 `sessions` 행을 받지 못한다.
+
+    이름을 지어 넣어 통과시키지 않는다 — 그러면 학습자 표에 없는 사람이
+    생긴다. 서버와 훈련은 그대로 돈다. 공부만 마이그레이션 뒤에 열린다.
+    """
+
+    code = "SCHEMA_OUTDATED"
+    http_status = 503
 
 
 class StudyController:
@@ -67,7 +86,6 @@ class StudyController:
         self._lock = lock
         self._clock = clock
         self._session_id: Optional[int] = None
-        self._learner_id: Optional[int] = None
         self._ended = False
         # 구동은 한 번에 하나. 겹치면 거부한다 — 세션의 `_drive_slot()` 과 같다.
         self._drive_lock = threading.Lock()
@@ -79,23 +97,24 @@ class StudyController:
         return self._session_id
 
     @property
-    def learner_id(self) -> int:
-        if self._learner_id is None:
-            raise SessionStateError("study has not been started")
-        return self._learner_id
-
-    @property
     def ended(self) -> bool:
         return self._ended
 
-    def start(self, learner_name: str) -> int:
-        """`sessions` 행을 열고 락을 잡는다. 못 잡으면 행을 닫고 나간다 (§49)."""
+    def start(self) -> int:
+        """`sessions` 행을 열고 락을 잡는다. 못 잡으면 행을 닫고 나간다 (§49).
+
+        학습자가 없는 행이다 (§63). 누가 공부했는지는 남지 않는다.
+        """
         if self._session_id is not None:
             raise SessionStateError("this controller already ran a study")
+        if not self._db.sessions_allow_no_learner():
+            raise StudySchemaOutdatedError(
+                "sessions.learner_id is NOT NULL in this database; "
+                "run tools/migrate_db.py before starting a study"
+            )
         with self._db.session() as db:
-            learner = get_or_create_learner(db, learner_name)
             row = TrainingSession(
-                learner_id=learner.id,
+                learner_id=None,
                 status="running",
                 source=STUDY_SOURCE,
                 plan_json=None,
@@ -103,7 +122,7 @@ class StudyController:
             )
             db.add(row)
             db.commit()
-            session_id, learner_id = row.id, learner.id
+            session_id = row.id
         try:
             self._lock.acquire(session_id)
         except Exception:
@@ -111,7 +130,6 @@ class StudyController:
             self._ended = True
             raise
         self._session_id = session_id
-        self._learner_id = learner_id
         return session_id
 
     @contextmanager

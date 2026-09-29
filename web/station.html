@@ -1031,6 +1031,24 @@
      한다 (PRD 14.2, 15.2). */
   #teacherMode .logHead { display: flex; justify-content: space-between; align-items: baseline; gap: var(--sp-4); }
   #teacherMode .logHead .count { font: 800 1rem var(--sans); color: var(--text-2); font-variant-numeric: tabular-nums; }
+  /* MCP 설명 — 접혀 있다. 펼쳐도 로그보다 작게 둔다. 로그가 주인공이다. */
+  #teacherMode details.mcpAbout { margin-top: var(--sp-3); }
+  #teacherMode details.mcpAbout > summary { cursor: pointer; color: var(--text-2); font-size: 0.95rem; font-weight: 700; }
+  #teacherMode details.mcpAbout h3.sub { margin-top: var(--sp-4); margin-bottom: 0; font-size: 0.95rem; }
+  #teacherMode details.mcpAbout code { font: 0.85rem ui-monospace, Consolas, monospace; }
+  #teacherMode .tools { margin: var(--sp-2) 0 0; font-size: 0.9rem; color: var(--text-2); }
+  #teacherMode .tools dt { margin-top: var(--sp-2); font-weight: 800; color: var(--text); }
+  #teacherMode .tools dt .note { display: inline; font-weight: 500; }
+  #teacherMode .tools dd { margin: var(--sp-1) 0 0 var(--sp-4); }
+  #teacherMode .tools dd code { font-weight: 700; margin-right: var(--sp-2); }
+  #teacherMode pre.example {
+    margin: var(--sp-2) 0 0;
+    padding: var(--sp-3);
+    border-bottom: 2px solid var(--sky-study);
+    overflow-x: auto;
+    font: 0.8rem/1.5 ui-monospace, Consolas, monospace;
+    color: var(--text-2);
+  }
   /* 줄 종류 풀이. 로그 줄과 같은 색의 작은 견본이다. */
   #teacherMode .legend {
     list-style: none;
@@ -1204,15 +1222,14 @@
     <main id="studyView" hidden>
       <header class="viewHead">
         <h2>글자</h2>
-        <span class="counter" id="studyWho"></span>
       </header>
 
       <section id="studyStart" class="card">
         <p class="note">
           글자를 하나씩 눌러 로봇손으로 봅니다. 채점하지 않고, 기록도 남지 않습니다.
         </p>
-        <label for="studyName">이름</label>
-        <input type="text" id="studyName" class="plain" autocomplete="off">
+        <!-- 이름을 받지 않는다. 기록이 없는데 이름을 받으면 "내 기록이 남나?" 하고
+             헷갈리고, 학습자 목록에 공부만 한 이름이 생긴다 (DECISIONS §63) -->
         <div class="row">
           <button class="primary" id="studyStartBtn" type="button">글자 보기 시작</button>
         </div>
@@ -1589,6 +1606,65 @@
             이 패널은 보기만 합니다 — 여기서 실행되는 것은 없습니다.
             건수는 교사 모드를 연 뒤 지나간 호출 수입니다.
           </p>
+          <!-- MCP 가 무엇인지. 기본은 접혀 있다 — 교사가 매번 읽을 것이 아니다.
+               도구 목록은 mcp_server/server.py 의 9개, 예시는 README 4장 (라) ② 의
+               실제 실행 발췌다. 붙이는 절차는 README 4장 (다) 에만 둔다.
+               계획 세션의 구동 거부는 DECISIONS §62 -->
+          <details class="mcpAbout">
+            <summary>MCP 란? — 연결 방법과 할 수 있는 일</summary>
+
+            <h3 class="sub">이게 무엇인가</h3>
+            <p class="note">
+              Claude 같은 AI 가 이 로봇손을 도구로 쓸 수 있게 연결하는 통로입니다. AI 가 대화로 지시를 받고,
+              그 지시를 이 스테이션의 도구 호출로 바꿉니다. 무엇을 호출했는지는 아래 로그에 그대로 남습니다.
+            </p>
+
+            <h3 class="sub">어떻게 붙이는가</h3>
+            <ul class="terms">
+              <li>Claude Desktop 설정 파일에 이 프로젝트의 MCP 서버를 등록합니다</li>
+              <li>프로젝트의 절대 경로와 <code>PYTHONPATH</code> 가 필요합니다</li>
+              <li>Claude Desktop 을 완전히 종료한 뒤 다시 열면 커넥터 목록에 나타납니다</li>
+            </ul>
+            <p class="note">자세한 절차와 설정 예시는 README 4장 (다) 에 있습니다.</p>
+
+            <h3 class="sub">무엇을 할 수 있는가 — 도구 9개</h3>
+            <dl class="tools">
+              <dt>조회 <span class="note">— 아무것도 바꾸지 않습니다</span></dt>
+              <dd><code>get_capabilities</code> 이 손이 만들 수 있는 글자와 트랙</dd>
+              <dd><code>get_station_status</code> 스테이션이 쉬는 중인지, 누가 손을 쥐고 있는지</dd>
+              <dd><code>get_learner_stats</code> 학습자 성적, 트랙별로만</dd>
+              <dd><code>get_item_bank</code> 조건에 맞는 문항 후보</dd>
+              <dt>세션 <span class="note">— 세션을 열고 닫습니다</span></dt>
+              <dd><code>start_session</code> 세션을 열고 로봇손 사용 권한(락)을 잡습니다</dd>
+              <dd><code>submit_answer</code> 직전 문항의 답을 채점합니다</dd>
+              <dd><code>end_session</code> 세션을 끝내고 손을 안전 자세로 놓습니다</dd>
+              <dt>구동 <span class="note">— 손이 움직입니다</span></dt>
+              <dd><code>present_sequence</code> 글자열을 손으로 보여 줍니다 (채점 문항)</dd>
+              <dd><code>demo_letter</code> 글자 하나를 시범으로 보여 줍니다 (기록 없음)</dd>
+            </dl>
+
+            <h3 class="sub">예시</h3>
+            <pre class="example">get_capabilities(learner_name="민지")
+  → 만들 수 있는 글자 목록
+start_session(learner_name="민지", …)
+  → 세션 1
+present_sequence(… letters="CAT")
+  → 차단: unsupported_letters
+present_sequence(… letters="VWB", hold_ms=5000)
+  → 표현 완료, 유지 3000ms 로 잘림
+end_session(session_id=1)
+  → 트랙별 요약</pre>
+
+            <h3 class="sub">할 수 없는 것</h3>
+            <ul class="terms">
+              <li>AI 는 <strong>글자 이름까지만</strong> 다룹니다. 각도나 손가락 값은 도구에 아예 없습니다</li>
+              <li>설정 파일(<code>poses.json</code>)에 없는 글자는 거부됩니다</li>
+              <li>아직 해금되지 않은 깊이쌍은 거부됩니다</li>
+              <li><strong>승인한 계획으로 만든 세션은 계획대로만 움직입니다.</strong> AI 가 계획 밖의 글자를 내려 해도
+                거부됩니다</li>
+              <li>속도 제한, 세션당 구동 횟수 상한, 동시 구동 차단이 걸려 있습니다</li>
+            </ul>
+          </details>
           <ul class="legend" aria-label="줄 종류">
             <li>도구 호출</li>
             <li class="l-result">호출 결과</li>
@@ -1729,6 +1805,8 @@ const REJECTION_TEXT = {
     "로봇손이 응답하지 않습니다. 선생님께 알려 주세요.",
   SESSION_FINISHED: () => "계획된 문항을 모두 마쳤습니다.",
   SESSION_STATE: () => "지금은 할 수 없는 동작입니다. 화면의 안내를 따라 주세요.",
+  // 공부만 막힌다. 학습자가 할 수 있는 일은 없다 — 서버 쪽 DB 를 옮겨야 한다.
+  SCHEMA_OUTDATED: () => "지금은 글자 화면을 열 수 없습니다. 선생님께 알려 주세요.",
   NETWORK: () => "서버와 연결되지 않습니다. 잠시 뒤 다시 시도하고, 계속되면 선생님께 알려 주세요.",
 };
 
@@ -3648,9 +3726,6 @@ function setStudyError(message) { el("studyError").textContent = message || ""; 
 
 /** 공부 화면에 들어올 때. 손이 잡혀 있으면 해제를 내놓는다 (§51). */
 async function enterStudy() {
-  if (!el("studyName").value.trim() && state.learnerName) {
-    el("studyName").value = state.learnerName;
-  }
   if (study.sessionId) return;
   try {
     const open = await call("GET", "/api/sessions/open");
@@ -3662,11 +3737,9 @@ async function enterStudy() {
 
 async function startStudy() {
   setStudyError("");
-  const name = el("studyName").value.trim();
-  if (!name) { el("studyNote").textContent = "이름을 입력하세요."; return; }
   let started;
   try {
-    started = await call("POST", "/api/study-sessions", { learner_name: name });
+    started = await call("POST", "/api/study-sessions", {});
   } catch (err) {
     el("studyNote").textContent = said(err);
     if (err.code === "LOCK_UNAVAILABLE") renderStudyRecovery(true);
@@ -3674,10 +3747,7 @@ async function startStudy() {
   }
   study.sessionId = started.session_id;
   state.letters = started.letters;
-  state.learnerName = name;
-  if (!el("name").value.trim()) el("name").value = name;
   el("studyNote").textContent = "";
-  el("studyWho").textContent = name;
   renderStudyRecovery(true);
   renderStudyPads(started.letters, started.references);
   show("studyStart", false);
@@ -3791,7 +3861,6 @@ async function endStudy() {
 function abandonStudy(message) {
   study.sessionId = null;
   setStudyBusy(false);
-  el("studyWho").textContent = "";
   el("studyStatus").textContent = "글자를 누르면 손이 그 자세를 만듭니다";
   show("studyPanel", false);
   show("studyStart", true);
@@ -3875,7 +3944,6 @@ el("studyStartBtn").addEventListener("click", startStudy);
 el("homeStudyBtn").addEventListener("click", () => showView("study"));
 el("homeTrainBtn").addEventListener("click", () => showView("train"));
 el("homeProgressBtn").addEventListener("click", () => showView("progress"));
-el("studyName").addEventListener("keydown", (e) => { if (e.key === "Enter") startStudy(); });
 el("studyEndBtn").addEventListener("click", endStudy);
 el("studyStopBtn").addEventListener("click", stopStudyMotion);
 el("studyResetBtn").addEventListener("click", resetFromStudy);

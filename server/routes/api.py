@@ -549,18 +549,19 @@ def _study(request: Request, session_id: int):
 
 
 @router.post("/study-sessions", status_code=201)
-def start_study(request: Request, body: Dict[str, Any] = Body(...)) -> Dict[str, Any]:
+def start_study(request: Request) -> Dict[str, Any]:
     """공부를 시작한다. 락을 잡는다 — 손을 움직이기 때문이다.
 
     훈련 세션과 **다른 컨트롤러**다. 채점·기록·적응 코드가 아예 없다.
     다른 세션이 손을 쥐고 있으면 `LOCK_UNAVAILABLE` 이다.
+
+    **이름을 받지 않는다** (§63). 몸통은 읽지 않는다 — 예전 화면이
+    `learner_name` 을 보내도 학습자 행은 생기지 않는다. 예전 DB 면
+    `SCHEMA_OUTDATED` 다.
     """
     station = _station(request)
-    learner_name = str(body.get("learner_name") or "").strip()
-    if not learner_name:
-        raise SessionStateError("learner_name is required")
     study = station.new_study()
-    session_id = study.start(learner_name)
+    session_id = study.start()
     station.studies[session_id] = study
     return {"session_id": session_id, **letters_payload(station.config)}
 

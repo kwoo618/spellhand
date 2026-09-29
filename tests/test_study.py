@@ -459,3 +459,163 @@ def test_sessions_without_a_mode_keep_their_old_plan_json(client, station):
     """MCP·에이전트 세션은 화면을 거치지 않는다. 칸이 없어야 한다."""
     sid = start(client)["session_id"]
     assert _plan_json(station, sid) == SMALL_PLAN
+
+
+# --------------------------------------------------------------------------- #
+# 공부는 이름을 받지 않는다 (§63)
+# --------------------------------------------------------------------------- #
+
+def _learner_names(client):
+    return client.get("/api/learners").json()["learners"]
+
+
+def test_study_starts_without_a_name(client, station, clock):
+    response = client.post("/api/study-sessions")
+    assert response.status_code == 201, response.text
+    study_id = response.json()["session_id"]
+    assert show(client, clock, study_id, letter="B").status_code == 200
+    client.post(f"/api/study-sessions/{study_id}/end")
+
+    with station.database.session() as db:
+        row = db.get(TrainingSession, study_id)
+        assert (row.source, row.learner_id) == (STUDY_SOURCE, None)
+    assert _learner_names(client) == []
+
+
+def test_a_name_sent_by_an_old_page_creates_no_learner(client, station):
+    """예전 화면이 이름을 보내도 학습자 행은 생기지 않는다. 몸통을 읽지 않는다."""
+    study_id = start_study(client, "ghost")
+    client.post(f"/api/study-sessions/{study_id}/end")
+
+    assert _learner_names(client) == []
+    with station.database.session() as db:
+        assert db.get(TrainingSession, study_id).learner_id is None
+
+
+def test_study_leaves_no_trace_in_learners_stats_or_progress(client, station, clock, config):
+    """공부 전후로 학습자 목록 · 통계 · 내 진행 · 혼동 격자가 한 글자도 같다."""
+    session = start(client)
+    sid = session["session_id"]
+    for _ in range(SMALL_PLAN["discrimination_items"] + SMALL_PLAN["word_items"]):
+        client.get(f"/api/sessions/{sid}/next")
+        client.post(f"/api/sessions/{sid}/present")
+        answer_correctly(client, station, sid)
+    client.post(f"/api/sessions/{sid}/end")
+
+    def snapshot():
+        return {
+            "learners": _learner_names(client),
+            "progress": client.get("/api/learners/haru/progress").json(),
+            "stats": client.get("/api/learners/haru/stats").json(),
+            "confusion": {
+                track: client.get(f"/api/stats/confusion?track={track}").json()
+                for track in ("discrimination", "word")
+            },
+        }
+
+    before = snapshot()
+    study_id = client.post("/api/study-sessions").json()["session_id"]
+    for letter in sorted(config.poses):
+        show(client, clock, study_id, letter=letter)
+    client.post(f"/api/study-sessions/{study_id}/end")
+
+    assert snapshot() == before
+    assert before["learners"] == ["haru"]
+
+
+def test_study_takes_no_turn_number_in_progress(client, station):
+    """J2 — 공부 세션은 번호를 먹지 않는다. 이름 없이 열어도 그대로다 (§60)."""
+    study_id = client.post("/api/study-sessions").json()["session_id"]
+    client.post(f"/api/study-sessions/{study_id}/end")
+    session = start(client)
+    sid = session["session_id"]
+    assert sid > study_id
+    for _ in range(SMALL_PLAN["discrimination_items"] + SMALL_PLAN["word_items"]):
+        client.get(f"/api/sessions/{sid}/next")
+        client.post(f"/api/sessions/{sid}/present")
+        answer_correctly(client, station, sid)
+    client.post(f"/api/sessions/{sid}/end")
+
+    body = client.get("/api/learners/haru/progress").json()
+    assert body["sessions"] == 1
+    points = body["by_track"]["discrimination"]["sessions"]
+    assert [p["ordinal"] for p in points] == [1]
+
+
+def test_training_still_needs_a_name(client, station):
+    """이름을 뺀 것은 공부뿐이다. 훈련은 여전히 이름을 받고 학습자를 만든다."""
+    refused = client.post("/api/sessions", json=dict(SMALL_PLAN))
+    assert refused.status_code == 409
+    assert refused.json()["code"] == "SESSION_STATE"
+    assert station.lock.holder() is None
+
+    session = start(client)
+    assert client.get("/api/sessions/open").json()["learner_name"] == "haru"
+    client.post(f"/api/sessions/{session['session_id']}/end")
+    assert _learner_names(client) == ["haru"]
+
+
+# --------------------------------------------------------------------------- #
+# 예전 DB — 마이그레이션 전에도 서버와 훈련은 돈다 (§63)
+# --------------------------------------------------------------------------- #
+
+OLD_SESSIONS_DDL = """CREATE TABLE sessions (
+	id INTEGER NOT NULL,
+	learner_id INTEGER NOT NULL,
+	status TEXT NOT NULL,
+	source TEXT NOT NULL,
+	plan_json TEXT,
+	started_at DATETIME,
+	ended_at DATETIME,
+	PRIMARY KEY (id),
+	FOREIGN KEY(learner_id) REFERENCES learners (id)
+)"""
+
+
+def old_database(path):
+    """§63 이전 스키마의 DB 파일. `sessions.learner_id` 가 NOT NULL 이다."""
+    database = Database(f"sqlite+pysqlite:///{path.as_posix()}")
+    database.create_all()
+    with database.engine.begin() as connection:
+        connection.exec_driver_sql("DROP TABLE sessions")
+        connection.exec_driver_sql(OLD_SESSIONS_DDL)
+    assert not database.sessions_allow_no_learner()
+    return database
+
+
+def test_an_old_database_refuses_study_but_still_trains(config, clock, tmp_path):
+    station = build_station(
+        config_path=REAL_POSES,
+        words_path=REAL_WORDS,
+        database=old_database(tmp_path / "old.db"),
+        device=MockDevice(config, sleep=clock.sleep),
+        clock=clock,
+        background=lambda work: work(),
+    )
+    with TestClient(create_app(station)) as client:
+        refused = client.post("/api/study-sessions")
+        assert refused.status_code == 503
+        assert refused.json()["code"] == "SCHEMA_OUTDATED"
+        # 이름을 지어 넣어 통과시키지 않았다. 락도 행도 남지 않는다.
+        assert station.lock.holder() is None
+        assert client.get("/api/learners").json()["learners"] == []
+
+        session = start(client)
+        assert session["session_id"] >= 1
+        client.post(f"/api/sessions/{session['session_id']}/end")
+
+
+def test_the_outdated_schema_code_is_its_own():
+    """새 거부 코드가 기존 거부 코드와 겹치지 않는다."""
+    from server.safety import SafetyError
+    from server.session import SessionError
+    from server.study import StudySchemaOutdatedError
+
+    def every(cls):
+        for sub in cls.__subclasses__():
+            yield sub
+            yield from every(sub)
+
+    others = {sub.code for base in (SafetyError, SessionError) for sub in every(base)
+              if sub is not StudySchemaOutdatedError and "code" in vars(sub)}
+    assert StudySchemaOutdatedError.code not in others

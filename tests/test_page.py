@@ -634,3 +634,67 @@ def test_teacher_spacing_uses_the_seven_steps(client):
         assert not literals, (a or b)
     assert "box-shadow" not in style and "gradient" not in style
     assert "border-bottom: 6px solid var(--letter-edge)" in style
+
+
+# --------------------------------------------------------------------------- #
+# 교사 모드 — MCP 설명 (접힌 영역)
+# --------------------------------------------------------------------------- #
+
+def _mcp_about(body):
+    markup = _teacher_markup(body)
+    start = markup.index('<details class="mcpAbout">')
+    return markup[start:markup.index("</details>", start)]
+
+
+def test_the_mcp_explanation_is_folded_and_teacher_only(client):
+    """교사가 매번 읽을 것이 아니다 — 기본은 접힘. 학습자 화면에는 없다."""
+    body = _page(client)
+    about = _mcp_about(body)
+    assert "<details class=\"mcpAbout\">" in about and " open" not in about.split(">", 1)[0]
+    assert "mcpAbout" not in _learner_markup(client.get("/station.html").text)
+    # 절차는 README 에 둔다. 화면은 가리키기만 한다.
+    assert "README 4장 (다)" in _visible_text(about)
+    assert "claude_desktop_config.json" not in about
+
+
+def test_the_mcp_explanation_lists_exactly_the_registered_tools(client):
+    """화면의 도구 목록은 MCP 서버가 실제로 등록한 9개와 같다. 지어낸 도구가 없다."""
+    import asyncio
+
+    from mcp_server.server import create_server
+
+    registered = {tool.name for tool in asyncio.run(create_server().list_tools())}
+    shown = set(re.findall(r"<dd><code>(\w+)</code>", _mcp_about(_page(client))))
+    assert shown == registered
+
+
+def test_the_mcp_explanation_says_what_the_ai_cannot_do(client):
+    """제일 중요한 절이다. 각도 없음 · 글자 거부 · 깊이쌍 · 계획 세션 · 속도·횟수·동시 구동."""
+    text = _visible_text(_mcp_about(_page(client)))
+    for phrase in ("글자 이름까지만", "각도나 손가락 값은 도구에 아예 없습니다",
+                   "없는 글자는 거부됩니다", "해금되지 않은 깊이쌍은 거부됩니다",
+                   "계획대로만 움직입니다", "속도 제한", "구동 횟수 상한", "동시 구동 차단"):
+        assert phrase in text, phrase
+
+
+# --------------------------------------------------------------------------- #
+# 글자(공부) — 이름을 받지 않는다 (§63)
+# --------------------------------------------------------------------------- #
+
+def test_the_study_screen_asks_for_no_name(client):
+    body = _page(client)
+    markup = body[body.index('<section id="studyStart"'):body.index('<section id="studyPanel"')]
+    assert "<input" not in markup and "이름" not in _visible_text(markup)
+    # 원래 문구는 그대로다.
+    assert "채점하지 않고, 기록도 남지 않습니다." in markup
+    start = _function(body, "startStudy")
+    assert "learner_name" not in start and 'call("POST", "/api/study-sessions", {})' in start
+    # 공부가 훈련의 이름 칸을 채우지 않는다 — 누가 공부했는지 모른다.
+    assert 'el("name")' not in start and "learnerName" not in start
+
+
+def test_the_training_screen_still_asks_for_a_name(client):
+    body = _page(client)
+    learner = _learner_markup(body)
+    assert 'id="name"' in learner
+    assert "learner_name: name" in body
